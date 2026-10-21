@@ -23,9 +23,3 @@ PY
     echo "Extension installed. Log out and back in once so GNOME loads it."
 fi
 ~/.local/bin/claude-account init
-cat <<'MSG'
-
-Two accounts are set up: 1 and 2. If Claude Code was already logged in, that login is
-account 1. Click an account that says "sign in" in the top bar to sign in to it
-(or run: claude-account add 2 --private).
-MSG

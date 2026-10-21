@@ -19,9 +19,9 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 - **Live usage.** Each account shows its 5-hour usage in percent, refreshed every minute.
   The selected account has an orange bar, the other a grey one.
 - **Reset time.** Hover an account to see when its limit resets.
-- **Sign in from the top bar.** An account you haven't signed in to yet says *sign in*.
-  Click it and choose a **private window**, so your browser can't quietly reuse the
-  Claude account it's already logged in to. Once you're in, that account becomes active.
+- **Add accounts from the top bar.** Click **+**, type a name (anything short: `2`, `work`,
+  `-`), and sign in in a **private window**, so your browser can't quietly reuse the Claude
+  account it's already logged in to. Once you're in, that account becomes active.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
 ## How it works
@@ -46,14 +46,14 @@ cd claude-account-switcher
 ./install.sh
 ```
 
-The installer sets up two accounts, **1** and **2**. If Claude Code is already logged in,
-that login becomes account 1. Log out and back in once so GNOME loads the extension, then
-click **2 · sign in** in the top bar:
+If Claude Code is already logged in, the installer saves that login as account **1**
+(rename it with `claude-account rename 1 NAME`). Log out and back in once so GNOME loads the
+extension, then click **+** in the top bar to add your other account under any name.
+Accounts listed but not signed in yet say *sign in*; clicking one opens the same choice:
 
 <p align="center"><img src="docs/sign-in.svg" alt="Clicking an account that isn't signed in opens a dialog offering a private or a normal browser window"></p>
 
-Want other names or more accounts? `claude-account init A B C` on a fresh setup, or
-`claude-account add NAME --private` at any time.
+From the terminal, `claude-account add NAME --private` does the same with the name you type.
 
 ## Usage
 
@@ -65,6 +65,7 @@ Want other names or more accounts? `claude-account init A B C` on a fresh setup,
 | `claude-account usage` | Fetch 5-hour usage for every account |
 | `claude-account add NAME --private` | Sign in to an account in a private browser window |
 | `claude-account add NAME --current` | Save the login Claude Code is using right now |
+| `claude-account rename OLD NEW` | Rename an account |
 | `claude-account remove NAME` | Forget an account's login |
 
 Avoid running `/login` inside Claude Code after setup: it changes the login behind the

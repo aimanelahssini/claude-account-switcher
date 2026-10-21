@@ -34,6 +34,11 @@ export default class ClaudeAccountExtension extends Extension {
             y_align: Clutter.ActorAlign.CENTER}));
         this._indicator.add_child(this._box);
         this._buttons = [];
+        this._addBtn = new St.Button({label: '+', style_class: 'claude-acct-btn claude-acct-add',
+            y_align: Clutter.ActorAlign.CENTER});
+        this._addBtn.connect('clicked', () => this._askNewAccount());
+        this._addBtn.connect('notify::hover', () => this._showTooltip(this._addBtn));
+        this._box.add_child(this._addBtn);
         this._tooltip = new St.Label({style_class: 'claude-acct-tooltip', visible: false});
         Main.layoutManager.uiGroup.add_child(this._tooltip);
 
@@ -123,7 +128,7 @@ export default class ClaudeAccountExtension extends Extension {
             this._buttons.forEach(b => b.destroy());
             this._buttons = slots.map(n => {
                 const b = this._makeButton(n);
-                this._box.add_child(b);
+                this._box.insert_child_below(b, this._addBtn);
                 return b;
             });
         }
@@ -170,8 +175,11 @@ export default class ClaudeAccountExtension extends Extension {
             this._tooltip.hide();
             return;
         }
-        this._tooltip.text = this._signedIn.has(b._slot)
-            ? this._resetText(b._slot) : 'Not signed in. Click to sign in.';
+        if (b === this._addBtn)
+            this._tooltip.text = 'Add a Claude account';
+        else
+            this._tooltip.text = this._signedIn.has(b._slot)
+                ? this._resetText(b._slot) : 'Not signed in. Click to sign in.';
         this._tooltip.show();
         const [x, y] = b.get_transformed_position();
         const [w, h] = b.get_transformed_size();
@@ -215,6 +223,49 @@ export default class ClaudeAccountExtension extends Extension {
             {label: 'Private window', action: () => { dialog.close(); this._signIn(n, true); }, default: true},
         ]);
         dialog.open();
+    }
+
+    // Name a new account, then sign in to it.
+    _askNewAccount() {
+        const taken = new Set(this._slots());
+        let suggestion = 1;
+        while (taken.has(String(suggestion)))
+            suggestion++;
+        const dialog = new ModalDialog.ModalDialog();
+        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
+            title: 'Add a Claude account',
+            description: 'Give it a short name for the top bar, like 2, work or −. Then sign in. ' +
+                'A private window makes sure your browser doesn\'t reuse an account you\'re ' +
+                'already signed in to.',
+        }));
+        const entry = new St.Entry({style_class: 'claude-acct-entry', text: String(suggestion),
+            can_focus: true, x_expand: true});
+        dialog.contentLayout.add_child(entry);
+        const error = new St.Label({style_class: 'claude-acct-error', text: ''});
+        dialog.contentLayout.add_child(error);
+        const go = privateWindow => {
+            const raw = entry.get_text().trim();
+            const name = raw === '−' ? '-' : raw;
+            if (!name || name.includes('/') || name.startsWith('.')) {
+                error.text = 'Pick a name without "/" that doesn\'t start with "."';
+                return;
+            }
+            if (taken.has(name)) {
+                error.text = `There's already an account named ${label(name)}`;
+                return;
+            }
+            dialog.close();
+            this._signIn(name, privateWindow);
+        };
+        dialog.setButtons([
+            {label: 'Cancel', action: () => dialog.close(), key: Clutter.KEY_Escape},
+            {label: 'Normal window', action: () => go(false)},
+            {label: 'Private window', action: () => go(true), default: true},
+        ]);
+        dialog.setInitialKeyFocus(entry.clutter_text);
+        entry.clutter_text.connect('activate', () => go(true));
+        dialog.open();
+        entry.clutter_text.set_selection(0, -1);
     }
 
     // The sign-in runs in a terminal so the login can fall back to pasting a code.

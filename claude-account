@@ -4,7 +4,7 @@
 A running Claude Code session notices the credentials file changed (mtime) and
 uses the new login on its next request, so the current chat just continues.
 
-  claude-account init [NAMES]     set up account names (default: 1 2) and save the current login
+  claude-account init [NAMES]     save the current Claude Code login (as the first NAME, else "1")
   claude-account list             show accounts and which ones are signed in
   claude-account current          print the active account
   claude-account switch N         make account N active
@@ -12,6 +12,7 @@ uses the new login on its next request, so the current chat just continues.
       --private                   ...in a private window, so the browser can't reuse another login
       --switch                    ...and switch to it afterwards
       --current                   save the account Claude Code is logged into now, no browser
+  claude-account rename OLD NEW   rename an account (any name: 2, work, -, ...)
   claude-account remove N         forget account N's login
   claude-account usage            fetch 5-hour usage % for every account into accounts/usage.cache
 """
@@ -65,6 +66,7 @@ def names():
 
 
 def set_names(new):
+    new = list(dict.fromkeys(new))  # no duplicates, order kept
     os.makedirs(SLOTS, mode=0o700, exist_ok=True)
     with open(NAMES + ".tmp", "w") as f:
         f.write("".join(f"{n}\n" for n in new))
@@ -259,13 +261,40 @@ def remove(n):
     print(f"forgot the login for {n}")
 
 
+def rename(old, new):
+    if old not in names():
+        sys.exit(f"no account named {old}")
+    if new in names():
+        sys.exit(f"there's already an account named {new}")
+    if not new or "/" in new or new.startswith("."):
+        sys.exit("pick a name without '/' that doesn't start with '.'")
+    with locked():
+        order = names()  # read before moving the file, or the moved login looks like an extra account
+        if os.path.exists(slot_path(old)):
+            os.replace(slot_path(old), slot_path(new))
+        set_names([new if n == old else n for n in order])
+        if current() == old:
+            set_active(new)
+        try:
+            cache = read_json(USAGE_CACHE)
+            if old in cache:
+                cache[new] = cache.pop(old)
+                write_json(USAGE_CACHE, cache, mode=0o644)
+        except (FileNotFoundError, ValueError):
+            pass
+    print(f"renamed {old} to {new}")
+
+
 def init(new_names):
-    if not os.path.exists(NAMES):
-        set_names(new_names or ["1", "2"])
-    first = names()[0]
+    """Installer entry point: names come from the user, so only the current login is saved."""
+    if new_names and not os.path.exists(NAMES):
+        set_names(new_names)
     if not slots() and os.path.exists(CREDS):
-        add(first, use_current=True)
-    print("accounts: " + "  ".join(names()))
+        add((names() or ["1"])[0], use_current=True)
+    if names():
+        print("accounts: " + "  ".join(names()))
+    print("Add an account with the + in the top bar, or: claude-account add NAME --private")
+    print("Rename one with: claude-account rename OLD NEW")
 
 
 def main():
@@ -285,6 +314,8 @@ def main():
         init(a[1:])
     elif a[0] == "remove" and len(a) == 2:
         remove(a[1])
+    elif a[0] == "rename" and len(a) == 3:
+        rename(a[1], a[2])
     elif a[0] == "switch" and len(a) == 2:
         with locked():
             switch(a[1])

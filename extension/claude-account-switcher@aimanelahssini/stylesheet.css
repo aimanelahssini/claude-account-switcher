@@ -23,3 +23,6 @@
   padding: 6px 10px; font-size: 0.9em;
 }
 .claude-acct-btn.signed-out .claude-acct-pct { font-style: italic; }
+.claude-acct-add { font-weight: bold; color: rgba(255,255,255,0.55); padding: 0 8px; }
+.claude-acct-entry { margin-top: 12px; }
+.claude-acct-error { color: #ff7b63; margin-top: 6px; }
