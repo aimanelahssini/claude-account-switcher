@@ -10,7 +10,9 @@ if command -v gnome-shell >/dev/null; then
     mkdir -p ~/.local/share/gnome-shell/extensions
     rm -rf ~/.local/share/gnome-shell/extensions/$UUID
     cp -r extension/$UUID ~/.local/share/gnome-shell/extensions/
-    gnome-extensions enable $UUID 2>/dev/null || python3 - "$UUID" <<'PY'
+    # Only add to GNOME's enabled list. (gnome-extensions enable can rewrite the list from the
+    # running shell's view and drop other extensions.)
+    python3 - "$UUID" <<'PY'
 import ast, subprocess, sys
 cur = subprocess.check_output(['gsettings', 'get', 'org.gnome.shell', 'enabled-extensions'], text=True)
 l = ast.literal_eval(cur.replace('@as ', ''))
