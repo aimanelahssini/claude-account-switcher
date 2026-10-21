@@ -6,6 +6,7 @@ import * as Dialog from 'resource:///org/gnome/shell/ui/dialog.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const SLOTS = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'accounts']);
@@ -21,6 +22,27 @@ const TERMINALS = [
     ['konsole', '-e'],
     ['xterm', '-e'],
 ];
+
+const DAY = 86400;
+
+function readHistory() {
+    try {
+        const [ok, bytes] = GLib.file_get_contents(GLib.build_filenamev([SLOTS, 'history.jsonl']));
+        if (!ok)
+            return [];
+        return new TextDecoder().decode(bytes).split('\n').flatMap(l => {
+            try { return l ? [JSON.parse(l)] : []; } catch { return []; }
+        });
+    } catch {
+        return [];
+    }
+}
+
+function dayName(d) {
+    const today = GLib.DateTime.new_now_local();
+    const diff = today.get_day_of_year() - d.get_day_of_year() + 365 * (today.get_year() - d.get_year());
+    return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : d.format('%a %e %b');
+}
 
 function label(n) {
     return n === '-' ? '−' : n;
@@ -65,6 +87,8 @@ export default class ClaudeAccountExtension extends Extension {
         this._indicator = null;
         this._tooltip?.destroy();
         this._tooltip = null;
+        this._buttons?.forEach(b => b._menu?.destroy());
+        this._menuManager = null;
         this._buttons = [];
     }
 
@@ -101,7 +125,8 @@ export default class ClaudeAccountExtension extends Extension {
     }
 
     _makeButton(n) {
-        const b = new St.Button({style_class: 'claude-acct-btn', y_align: Clutter.ActorAlign.CENTER});
+        const b = new St.Button({style_class: 'claude-acct-btn', y_align: Clutter.ActorAlign.CENTER,
+            button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE});
         const inner = new St.BoxLayout({style_class: 'claude-acct-inner', vertical: true,
             y_align: Clutter.ActorAlign.CENTER});
         const row = new St.BoxLayout({style_class: 'claude-acct-row', x_align: Clutter.ActorAlign.CENTER});
@@ -116,7 +141,16 @@ export default class ClaudeAccountExtension extends Extension {
         inner.add_child(b._track);
         b.set_child(inner);
         b._slot = n;
-        b.connect('clicked', () => this._signedIn.has(n) ? this._switch(n) : this._askSignIn(n));
+        // Click: switch to it (or show its history if it's already the active one).
+        // Right-click: history of any account.
+        b.connect('clicked', (btn, mouse) => {
+            if (!this._signedIn.has(n))
+                this._askSignIn(n);
+            else if (mouse === 3 || n === this._readFile('active').trim())
+                this._toggleHistory(b);
+            else
+                this._switch(n);
+        });
         b.connect('notify::hover', () => this._showTooltip(b));
         return b;
     }
@@ -153,6 +187,131 @@ export default class ClaudeAccountExtension extends Extension {
             if (isActive) b.add_style_class_name('active');
             else b.remove_style_class_name('active');
         }
+    }
+
+    // ---- usage history panel -------------------------------------------------------
+    _toggleHistory(b) {
+        if (!b._menu) {
+            this._menuManager ??= new PopupMenu.PopupMenuManager(this._indicator);
+            b._menu = new PopupMenu.PopupMenu(b, 0.5, St.Side.TOP);
+            b._menu.actor.add_style_class_name('claude-acct-menu');
+            Main.uiGroup.add_child(b._menu.actor);
+            b._menu.actor.hide();
+            this._menuManager.addMenu(b._menu);
+            b.connect('destroy', () => b._menu?.destroy());
+        }
+        if (!b._menu.isOpen)
+            this._fillHistory(b);
+        this._tooltip.hide();
+        b._menu.toggle();
+    }
+
+    _fillHistory(b) {
+        const n = b._slot;
+        const menu = b._menu;
+        menu.removeAll();
+        const active = n === this._readFile('active').trim();
+        const usage = this._readUsage()[n] ?? {};
+        let account = {};
+        try {
+            account = JSON.parse(this._readFile(`${n}.json`)).oauthAccount ?? {};
+        } catch {}
+        const hist = readHistory().filter(e => e.a === n);
+
+        const item = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false,
+            style_class: 'claude-acct-history'});
+        const box = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'claude-acct-history-box'});
+        item.add_child(box);
+        menu.addMenuItem(item);
+
+        // Header: name, who, and the current reading
+        const head = new St.BoxLayout({style_class: 'claude-acct-history-head'});
+        head.add_child(new St.Label({text: label(n), style_class: `claude-acct-history-name${active ? ' active' : ''}`}));
+        head.add_child(new St.Label({text: [account.emailAddress, account.organizationName].filter(Boolean).join(' · ') ||
+            'Claude account', style_class: 'claude-acct-history-who', y_align: Clutter.ActorAlign.CENTER}));
+        box.add_child(head);
+        const pct = typeof usage.pct === 'number' ? `${Math.round(usage.pct)}% of the 5-hour limit` : 'Usage unknown';
+        box.add_child(new St.Label({text: `${pct} · ${this._resetText(n).replace(/^R/, 'r')}`,
+            style_class: 'claude-acct-history-now'}));
+
+        // Chart: the last 24 hours
+        box.add_child(new St.Label({text: 'Last 24 hours', style_class: 'claude-acct-history-title'}));
+        const now = Date.now() / 1000;
+        const points = hist.filter(e => e.t >= now - DAY).map(e => [e.t, e.pct, e.reset]);
+        const chart = new St.DrawingArea({style_class: 'claude-acct-chart', width: 320, height: 84});
+        chart.connect('repaint', area => this._drawChart(area, points, now, active));
+        box.add_child(chart);
+        const axis = new St.BoxLayout({style_class: 'claude-acct-chart-axis'});
+        axis.add_child(new St.Label({text: '24 h ago', x_expand: true}));
+        axis.add_child(new St.Label({text: '12 h'}));
+        axis.add_child(new St.Label({text: 'now', x_expand: true, x_align: Clutter.ActorAlign.END}));
+        box.add_child(axis);
+
+        // Recent 5-hour windows with their peak
+        box.add_child(new St.Label({text: 'Recent 5-hour windows', style_class: 'claude-acct-history-title'}));
+        const peaks = new Map();
+        for (const e of hist)
+            if (e.reset && e.t >= now - 7 * DAY)
+                peaks.set(e.reset, Math.max(peaks.get(e.reset) ?? 0, e.pct));
+        const windows = [...peaks].map(([reset, peak]) => {
+            const end = GLib.DateTime.new_from_iso8601(reset, null)?.to_local();
+            return end ? {end, start: end.add_hours(-5), peak} : null;
+        }).filter(Boolean).sort((x, y) => y.end.to_unix() - x.end.to_unix()).slice(0, 6);
+        if (!windows.length)
+            box.add_child(new St.Label({text: 'Nothing recorded yet. Usage is saved every minute from now on.',
+                style_class: 'claude-acct-history-empty'}));
+        for (const w of windows) {
+            const row = new St.BoxLayout({style_class: 'claude-acct-window'});
+            row.add_child(new St.Label({text: `${dayName(w.start)}  ${w.start.format('%H:%M')}–${w.end.format('%H:%M')}`,
+                style_class: 'claude-acct-window-when', x_expand: true, y_align: Clutter.ActorAlign.CENTER}));
+            const track = new St.Widget({style_class: 'claude-acct-window-track', y_align: Clutter.ActorAlign.CENTER});
+            const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            track.add_child(new St.Widget({style_class: `claude-acct-window-fill${active ? ' active' : ''}`,
+                width: Math.round(90 * scale * Math.min(w.peak, 100) / 100)}));
+            row.add_child(track);
+            row.add_child(new St.Label({text: `${Math.round(w.peak)}%`, style_class: 'claude-acct-window-pct',
+                y_align: Clutter.ActorAlign.CENTER}));
+            box.add_child(row);
+        }
+
+        const since = hist.length ? GLib.DateTime.new_from_unix_local(hist[0].t) : null;
+        box.add_child(new St.Label({text: since ? `Recorded since ${dayName(since).replace(/^(Today|Yesterday)$/, d => d.toLowerCase())} ${since.format('%H:%M')}` +
+            ' · claude-account history' : 'claude-account history', style_class: 'claude-acct-history-foot'}));
+    }
+
+    _drawChart(area, points, now, active) {
+        const cr = area.get_context();
+        const [w, h] = area.get_surface_size();
+        const pad = 4;
+        const x = t => pad + (w - 2 * pad) * (1 - (now - t) / DAY);
+        const y = p => h - pad - (h - 2 * pad) * Math.min(p, 100) / 100;
+        // guide lines at 50% and 100%
+        cr.setSourceRGBA(1, 1, 1, 0.08);
+        cr.setLineWidth(1);
+        for (const p of [0, 50, 100]) {
+            cr.moveTo(pad, Math.round(y(p)) + 0.5);
+            cr.lineTo(w - pad, Math.round(y(p)) + 0.5);
+        }
+        cr.stroke();
+        const [r, g, bl] = active ? [0xd9 / 255, 0x77 / 255, 0x57 / 255] : [0.62, 0.62, 0.62];
+        // one segment per 5-hour window, so a reset shows as a drop, and gaps stay gaps
+        let prev = null;
+        for (const [t, p, reset] of points) {
+            const gap = prev && (t - prev[0] > 1800 || reset !== prev[2]);
+            if (!prev || gap)
+                cr.moveTo(x(t), y(p));
+            else
+                cr.lineTo(x(t), y(p));
+            prev = [t, p, reset];
+        }
+        cr.setSourceRGBA(r, g, bl, 1);
+        cr.setLineWidth(2);
+        cr.stroke();
+        if (prev) {
+            cr.arc(x(prev[0]), y(prev[1]), 3, 0, 2 * Math.PI);
+            cr.fill();
+        }
+        cr.$dispose();
     }
 
     _resetText(slot) {

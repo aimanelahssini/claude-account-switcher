@@ -15,8 +15,9 @@ uses the new login on its next request, so the current chat just continues.
   claude-account rename OLD NEW   rename an account (any name: 2, work, -, ...)
   claude-account remove N         forget account N's login
   claude-account usage            fetch 5-hour usage % for every account into accounts/usage.cache
+  claude-account history [N]      recent 5-hour windows and how high each went
 """
-import fcntl, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
+import datetime, fcntl, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 
 HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
@@ -27,6 +28,10 @@ ACTIVE = os.path.join(SLOTS, "active")
 NAMES = os.path.join(SLOTS, "names")
 REFRESH_LOCK = os.path.join(CLAUDE_DIR, ".oauth_refresh.lock")
 USAGE_CACHE = os.path.join(SLOTS, "usage.cache")
+# One JSON line per reading or switch: {"t", "a", "pct", "reset"} or {"t", "switch"}.
+HISTORY = os.path.join(SLOTS, "history.jsonl")
+HISTORY_DAYS = 30
+HISTORY_EVERY = 600  # record an unchanged reading at most every 10 minutes
 LOCK = os.path.join(SLOTS, ".lock")
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -127,6 +132,81 @@ def refresh_slot(n, slot):
     write_json(slot_path(n), slot)
 
 
+def read_history():
+    out = []
+    try:
+        with open(HISTORY) as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def append_history(entries):
+    if not entries:
+        return
+    with open(HISTORY, "a") as f:
+        for e in entries:
+            f.write(json.dumps(e, separators=(",", ":")) + "\n")
+    if os.path.getsize(HISTORY) > 512 * 1024:  # prune now and then
+        cutoff = time.time() - HISTORY_DAYS * 86400
+        keep = [e for e in read_history() if e.get("t", 0) >= cutoff]
+        tmp = HISTORY + ".tmp"
+        with open(tmp, "w") as f:
+            f.writelines(json.dumps(e, separators=(",", ":")) + "\n" for e in keep)
+        os.replace(tmp, HISTORY)
+
+
+def record_readings(out):
+    """Add fresh readings to the history: on any change, else every HISTORY_EVERY seconds."""
+    last = {}
+    for e in read_history()[-200:]:
+        if "a" in e:
+            last[e["a"]] = e
+    now = int(time.time())
+    new = []
+    for n, u in out.items():
+        if n.startswith("_") or u.get("stale") or not isinstance(u.get("pct"), (int, float)):
+            continue
+        prev = last.get(n)
+        if prev and prev.get("pct") == u["pct"] and prev.get("reset") == u.get("resets_at") \
+                and now - prev["t"] < HISTORY_EVERY:
+            continue
+        new.append({"t": now, "a": n, "pct": u["pct"], "reset": u.get("resets_at")})
+    append_history(new)
+
+
+def windows(name, days=7):
+    """5-hour windows of one account, newest first: (start, end, peak %)."""
+    peaks = {}
+    cutoff = time.time() - days * 86400
+    for e in read_history():
+        if e.get("a") != name or not e.get("reset") or e["t"] < cutoff:
+            continue
+        peaks[e["reset"]] = max(peaks.get(e["reset"], 0), e["pct"])
+    out = []
+    for reset, peak in peaks.items():
+        end = datetime.datetime.fromisoformat(reset.replace("Z", "+00:00")).timestamp()
+        out.append((end - 5 * 3600, end, peak))
+    return sorted(out, reverse=True)
+
+
+def history(name=None):
+    for n in ([name] if name else names()):
+        print(f"{n}:")
+        rows = windows(n)
+        if not rows:
+            print("  no history yet (it's recorded from the first usage check on)")
+        for start, end, peak in rows[:10]:
+            s, e = datetime.datetime.fromtimestamp(start), datetime.datetime.fromtimestamp(end)
+            bar = "█" * round(peak / 10) + "·" * (10 - round(peak / 10))
+            print(f"  {s:%a %d %b %H:%M}–{e:%H:%M}  {bar} {peak:3.0f}%")
+
+
 def usage():
     cur = current()
     try:
@@ -157,6 +237,10 @@ def usage():
             out[n] = dict(last, stale=True, error=str(e)[:200]) if last.get("pct") is not None \
                 else {"pct": None, "error": str(e)[:200]}
     out["_at"] = int(time.time())
+    try:
+        record_readings(out)
+    except OSError:
+        pass
     with open(USAGE_CACHE + ".tmp", "w") as f:
         json.dump(out, f)
     os.replace(USAGE_CACHE + ".tmp", USAGE_CACHE)
@@ -187,6 +271,7 @@ def switch(n):
         cfg["oauthAccount"] = target["oauthAccount"]
         write_json(CONFIG, cfg, mode=os.stat(CONFIG).st_mode & 0o777)
     set_active(n)
+    append_history([{"t": int(time.time()), "switch": n}])
 
 
 # Private-window flags for browsers, keyed by a word in their .desktop id.
@@ -273,6 +358,17 @@ def rename(old, new):
         if os.path.exists(slot_path(old)):
             os.replace(slot_path(old), slot_path(new))
         set_names([new if n == old else n for n in order])
+        hist = read_history()
+        if any(e.get("a") == old or e.get("switch") == old for e in hist):
+            for e in hist:
+                if e.get("a") == old:
+                    e["a"] = new
+                if e.get("switch") == old:
+                    e["switch"] = new
+            tmp = HISTORY + ".tmp"
+            with open(tmp, "w") as f:
+                f.writelines(json.dumps(e, separators=(",", ":")) + "\n" for e in hist)
+            os.replace(tmp, HISTORY)
         if current() == old:
             set_active(new)
         try:
@@ -321,6 +417,8 @@ def main():
             switch(a[1])
     elif a[0] == "usage":
         usage()
+    elif a[0] == "history" and len(a) <= 2:
+        history(a[1] if len(a) == 2 else None)
     elif a[0] == "add" and len(a) >= 2:
         add(a[1], "--current" in a, private="--private" in a)
         if "--switch" in a:

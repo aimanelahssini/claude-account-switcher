@@ -26,3 +26,24 @@
 .claude-acct-add { font-weight: bold; color: rgba(255,255,255,0.55); padding: 0 8px; }
 .claude-acct-entry { margin-top: 12px; }
 .claude-acct-error { color: #ff7b63; margin-top: 6px; }
+
+/* Usage history panel (click the active account, or right-click any) */
+.claude-acct-history { padding: 4px 6px; }
+.claude-acct-history:hover { background-color: transparent; }
+.claude-acct-history-box { spacing: 6px; min-width: 330px; }
+.claude-acct-history-head { spacing: 10px; }
+.claude-acct-history-name { font-weight: bold; font-size: 1.3em; color: rgba(255,255,255,0.8); }
+.claude-acct-history-name.active { color: #d97757; }
+.claude-acct-history-who { color: rgba(255,255,255,0.6); font-size: 0.9em; }
+.claude-acct-history-now { color: #fff; }
+.claude-acct-history-title { margin-top: 8px; font-size: 0.85em; font-weight: bold; color: rgba(255,255,255,0.55); }
+.claude-acct-chart { border-radius: 6px; background-color: rgba(255,255,255,0.04); }
+.claude-acct-chart-axis { font-size: 0.75em; color: rgba(255,255,255,0.45); }
+.claude-acct-window { spacing: 10px; }
+.claude-acct-window-when { font-size: 0.9em; color: rgba(255,255,255,0.8); font-feature-settings: "tnum"; }
+.claude-acct-window-track { width: 90px; height: 4px; border-radius: 2px; background-color: rgba(255,255,255,0.18); }
+.claude-acct-window-fill { height: 4px; border-radius: 2px; background-color: rgba(255,255,255,0.45); }
+.claude-acct-window-fill.active { background-color: #d97757; }
+.claude-acct-window-pct { width: 40px; text-align: right; font-size: 0.9em; font-feature-settings: "tnum"; }
+.claude-acct-history-empty { color: rgba(255,255,255,0.5); font-size: 0.9em; }
+.claude-acct-history-foot { margin-top: 8px; font-size: 0.75em; color: rgba(255,255,255,0.4); }

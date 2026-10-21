@@ -19,10 +19,14 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 - **Live usage.** Each account shows its 5-hour usage in percent, refreshed every minute.
   The selected account has an orange bar, the other a grey one.
 - **Reset time.** Hover an account to see when its limit resets.
+- **Usage history.** Click the account you're on (or right-click any account) for a
+  chart of its last 24 hours and its recent 5-hour windows with how high each one went.
 - **Add accounts from the top bar.** Click **+**, type a name (anything short: `2`, `work`,
   `-`), and sign in in a **private window**, so your browser can't quietly reuse the Claude
   account it's already logged in to. Once you're in, that account becomes active.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
+
+<p align="center"><img src="docs/history.png" width="450" alt="History panel under the active account: current usage and reset time, a chart of the last 24 hours, and recent 5-hour windows with their peak usage"></p>
 
 ## How it works
 
@@ -63,6 +67,7 @@ From the terminal, `claude-account add NAME --private` does the same with the na
 | `claude-account current` | Print the active account |
 | `claude-account list` | List saved accounts |
 | `claude-account usage` | Fetch 5-hour usage for every account |
+| `claude-account history [NAME]` | Recent 5-hour windows and how high each went |
 | `claude-account add NAME --private` | Sign in to an account in a private browser window |
 | `claude-account add NAME --current` | Save the login Claude Code is using right now |
 | `claude-account rename OLD NEW` | Rename an account |
@@ -73,7 +78,10 @@ switcher's back. If an account stops working, run `claude-account add NAME` agai
 
 ## Privacy
 
-Everything stays on your machine. Saved logins live in `~/.claude/accounts/` with
+Everything stays on your machine. Usage history is a small file,
+`~/.claude/accounts/history.jsonl` (a reading per account at most every 10 minutes unless it
+changes, kept 30 days). Anthropic only reports the current number, so history starts when
+you install. Saved logins live in `~/.claude/accounts/` with
 owner-only permissions (`0600`). The only network calls go to Anthropic: the usage endpoint,
 and the token endpoint to renew an account that hasn't been used for a while.
 
