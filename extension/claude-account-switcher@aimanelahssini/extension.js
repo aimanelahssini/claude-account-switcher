@@ -2,7 +2,9 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import * as Dialog from 'resource:///org/gnome/shell/ui/dialog.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -10,6 +12,19 @@ const SLOTS = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'accounts'])
 const SCRIPT = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'claude-account']);
 const TRACK_WIDTH = 44;
 const POLL_SECONDS = 60;
+// Terminals tried, in order, to run the browser sign-in.
+const TERMINALS = [
+    ['xdg-terminal-exec'],
+    ['ptyxis', '--new-window', '--'],
+    ['kgx', '--'],
+    ['gnome-terminal', '--'],
+    ['konsole', '-e'],
+    ['xterm', '-e'],
+];
+
+function label(n) {
+    return n === '-' ? '−' : n;
+}
 
 export default class ClaudeAccountExtension extends Extension {
     enable() {
@@ -65,15 +80,19 @@ export default class ClaudeAccountExtension extends Extension {
         }
     }
 
+    // Names from the names file first (accounts can be listed before anyone signs in),
+    // then any other saved account. Sets this._signedIn.
     _slots() {
-        const out = [];
+        const saved = [];
         const en = Gio.File.new_for_path(SLOTS).enumerate_children('standard::name', 0, null);
         let info;
         while ((info = en.next_file(null))) {
             const n = info.get_name();
-            if (n.endsWith('.json')) out.push(n.slice(0, -5));
+            if (n.endsWith('.json')) saved.push(n.slice(0, -5));
         }
-        return out.sort();
+        this._signedIn = new Set(saved);
+        const listed = this._readFile('names').split('\n').map(l => l.trim()).filter(Boolean);
+        return [...listed, ...saved.sort().filter(n => !listed.includes(n))];
     }
 
     _makeButton(n) {
@@ -81,7 +100,7 @@ export default class ClaudeAccountExtension extends Extension {
         const inner = new St.BoxLayout({style_class: 'claude-acct-inner', vertical: true,
             y_align: Clutter.ActorAlign.CENTER});
         const row = new St.BoxLayout({style_class: 'claude-acct-row', x_align: Clutter.ActorAlign.CENTER});
-        row.add_child(new St.Label({text: n === '-' ? '−' : n, style_class: 'claude-acct-name'}));
+        row.add_child(new St.Label({text: label(n), style_class: 'claude-acct-name'}));
         b._pct = new St.Label({text: '…', style_class: 'claude-acct-pct',
             y_align: Clutter.ActorAlign.CENTER});
         row.add_child(b._pct);
@@ -92,7 +111,7 @@ export default class ClaudeAccountExtension extends Extension {
         inner.add_child(b._track);
         b.set_child(inner);
         b._slot = n;
-        b.connect('clicked', () => this._switch(n));
+        b.connect('clicked', () => this._signedIn.has(n) ? this._switch(n) : this._askSignIn(n));
         b.connect('notify::hover', () => this._showTooltip(b));
         return b;
     }
@@ -111,6 +130,15 @@ export default class ClaudeAccountExtension extends Extension {
         const active = this._readFile('active').trim();
         const usage = this._readUsage();
         for (const b of this._buttons) {
+            const signedIn = this._signedIn.has(b._slot);
+            b._track.opacity = signedIn ? 255 : 0;
+            if (signedIn) b.remove_style_class_name('signed-out');
+            else b.add_style_class_name('signed-out');
+            if (!signedIn) {
+                b._pct.text = 'sign in';
+                b.remove_style_class_name('active');
+                continue;
+            }
             const pct = usage[b._slot]?.pct;
             const known = typeof pct === 'number';
             b._pct.text = known ? `${Math.round(pct)}%` : '?';
@@ -142,7 +170,8 @@ export default class ClaudeAccountExtension extends Extension {
             this._tooltip.hide();
             return;
         }
-        this._tooltip.text = this._resetText(b._slot);
+        this._tooltip.text = this._signedIn.has(b._slot)
+            ? this._resetText(b._slot) : 'Not signed in. Click to sign in.';
         this._tooltip.show();
         const [x, y] = b.get_transformed_position();
         const [w, h] = b.get_transformed_size();
@@ -170,6 +199,39 @@ export default class ClaudeAccountExtension extends Extension {
             return;
         this._fetching = true;
         this._run(['usage'], () => { this._fetching = false; });
+    }
+
+    _askSignIn(n) {
+        const dialog = new ModalDialog.ModalDialog();
+        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
+            title: `Sign in to Claude account ${label(n)}`,
+            description: 'Your browser opens the Claude sign-in page. A private window makes sure ' +
+                'it doesn\'t reuse an account you\'re already signed in to. Once you\'re in, ' +
+                'this account becomes the active one.',
+        }));
+        dialog.setButtons([
+            {label: 'Cancel', action: () => dialog.close(), key: Clutter.KEY_Escape},
+            {label: 'Normal window', action: () => { dialog.close(); this._signIn(n, false); }},
+            {label: 'Private window', action: () => { dialog.close(); this._signIn(n, true); }, default: true},
+        ]);
+        dialog.open();
+    }
+
+    // The sign-in runs in a terminal so the login can fall back to pasting a code.
+    _signIn(n, privateWindow) {
+        const cmd = `export PATH="$HOME/.local/bin:$PATH"; ${GLib.shell_quote(SCRIPT)} add ${GLib.shell_quote(n)}` +
+            `${privateWindow ? ' --private' : ''} --switch && { echo; echo 'Done, this window closes in 3 seconds.'; sleep 3; } ` +
+            '|| { echo; read -rp "Sign-in did not finish. Press Enter to close."; }';
+        const terminal = TERMINALS.find(t => GLib.find_program_in_path(t[0]));
+        if (!terminal) {
+            Main.notify('Claude account sign-in', `No terminal found. Run: claude-account add ${n}`);
+            return;
+        }
+        try {
+            Gio.Subprocess.new([...terminal, 'bash', '-c', cmd], Gio.SubprocessFlags.NONE);
+        } catch (e) {
+            Main.notify('Claude account sign-in failed', e.message);
+        }
     }
 
     _switch(n) {

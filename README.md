@@ -19,6 +19,9 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 - **Live usage.** Each account shows its 5-hour usage in percent, refreshed every minute.
   The selected account has an orange bar, the other a grey one.
 - **Reset time.** Hover an account to see when its limit resets.
+- **Sign in from the top bar.** An account you haven't signed in to yet says *sign in*.
+  Click it and choose a **private window**, so your browser can't quietly reuse the
+  Claude account it's already logged in to. Once you're in, that account becomes active.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
 ## How it works
@@ -43,13 +46,14 @@ cd claude-account-switcher
 ./install.sh
 ```
 
-Log out and back in once so GNOME loads the extension. Then save your accounts, with any
-short names you like:
+The installer sets up two accounts, **1** and **2**. If Claude Code is already logged in,
+that login becomes account 1. Log out and back in once so GNOME loads the extension, then
+click **2 · sign in** in the top bar:
 
-```bash
-claude-account add 1 --current   # the account Claude Code is logged into right now
-claude-account add 2             # opens the browser to sign in to the other account
-```
+<p align="center"><img src="docs/sign-in.svg" alt="Clicking an account that isn't signed in opens a dialog offering a private or a normal browser window"></p>
+
+Want other names or more accounts? `claude-account init A B C` on a fresh setup, or
+`claude-account add NAME --private` at any time.
 
 ## Usage
 
@@ -59,7 +63,9 @@ claude-account add 2             # opens the browser to sign in to the other acc
 | `claude-account current` | Print the active account |
 | `claude-account list` | List saved accounts |
 | `claude-account usage` | Fetch 5-hour usage for every account |
-| `claude-account add NAME` | Sign in to another account and save it |
+| `claude-account add NAME --private` | Sign in to an account in a private browser window |
+| `claude-account add NAME --current` | Save the login Claude Code is using right now |
+| `claude-account remove NAME` | Forget an account's login |
 
 Avoid running `/login` inside Claude Code after setup: it changes the login behind the
 switcher's back. If an account stops working, run `claude-account add NAME` again.

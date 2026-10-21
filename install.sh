@@ -20,9 +20,10 @@ subprocess.run(['gsettings', 'set', 'org.gnome.shell', 'enabled-extensions', str
 PY
     echo "Extension installed. Log out and back in once so GNOME loads it."
 fi
+~/.local/bin/claude-account init
 cat <<'MSG'
 
-Next, save your accounts (pick any short names, e.g. 1 and 2):
-  claude-account add 1 --current   # the account Claude Code is logged into now
-  claude-account add 2             # opens a browser to sign in to the other one
+Two accounts are set up: 1 and 2. If Claude Code was already logged in, that login is
+account 1. Click an account that says "sign in" in the top bar to sign in to it
+(or run: claude-account add 2 --private).
 MSG

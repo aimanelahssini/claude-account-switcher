@@ -22,3 +22,4 @@
   background-color: rgba(30,30,30,0.95); color: #fff; border-radius: 8px;
   padding: 6px 10px; font-size: 0.9em;
 }
+.claude-acct-btn.signed-out .claude-acct-pct { font-style: italic; }

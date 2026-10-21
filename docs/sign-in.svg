@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" viewBox="0 0 760 300" font-family="Cantarell, 'Inter', 'Segoe UI', sans-serif">
+  <rect width="760" height="300" rx="18" fill="#2b2a33"/>
+  <rect x="20" y="20" width="720" height="52" rx="12" fill="#000"/>
+  <text x="430" y="54" fill="#bdbdbd" font-size="20">Claude</text>
+  <text x="510" y="53" fill="#fff" font-size="20" font-weight="bold">1</text><text x="528" y="53" fill="#fff" font-size="18" font-weight="bold">53%</text>
+  <rect x="510" y="59" width="56" height="5" rx="2.5" fill="#fff" fill-opacity="0.18"/><rect x="510" y="59" width="30" height="5" rx="2.5" fill="#d97757"/>
+  <rect x="592" y="28" width="104" height="38" rx="9" fill="#fff" fill-opacity="0.12"/>
+  <text x="604" y="53" fill="#9a9a9a" font-size="20" font-weight="bold">2</text><text x="622" y="53" fill="#9a9a9a" font-size="17" font-style="italic">sign in</text>
+  <rect x="150" y="92" width="460" height="186" rx="18" fill="#36363a"/>
+  <text x="380" y="132" fill="#fff" font-size="19" font-weight="bold" text-anchor="middle">Sign in to Claude account 2</text>
+  <text x="380" y="164" fill="#d0d0d0" font-size="14" text-anchor="middle">Your browser opens the Claude sign-in page. A private window</text>
+  <text x="380" y="184" fill="#d0d0d0" font-size="14" text-anchor="middle">makes sure it doesn't reuse an account you're already signed in to.</text>
+  <line x1="150" y1="222" x2="610" y2="222" stroke="#4a4a50"/>
+  <line x1="303" y1="222" x2="303" y2="278" stroke="#4a4a50"/><line x1="457" y1="222" x2="457" y2="278" stroke="#4a4a50"/>
+  <text x="226" y="256" fill="#fff" font-size="15" text-anchor="middle">Cancel</text>
+  <text x="380" y="256" fill="#fff" font-size="15" text-anchor="middle">Normal window</text>
+  <path d="M457 222h153v38a18 18 0 0 1-18 18h-135z" fill="#3584e4"/>
+  <text x="533" y="256" fill="#fff" font-size="15" font-weight="bold" text-anchor="middle">Private window</text>
+</svg>

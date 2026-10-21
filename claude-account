@@ -4,12 +4,16 @@
 A running Claude Code session notices the credentials file changed (mtime) and
 uses the new login on its next request, so the current chat just continues.
 
-  claude-account current        print active slot number
-  claude-account list           show slots
-  claude-account switch N       make slot N active
-  claude-account add N          log in a new account into slot N (browser login)
-  claude-account add N --current  save the account logged in right now as slot N
-  claude-account usage          fetch 5-hour usage % for every slot into accounts/usage.cache
+  claude-account init [NAMES]     set up account names (default: 1 2) and save the current login
+  claude-account list             show accounts and which ones are signed in
+  claude-account current          print the active account
+  claude-account switch N         make account N active
+  claude-account add N            sign in to account N in the browser
+      --private                   ...in a private window, so the browser can't reuse another login
+      --switch                    ...and switch to it afterwards
+      --current                   save the account Claude Code is logged into now, no browser
+  claude-account remove N         forget account N's login
+  claude-account usage            fetch 5-hour usage % for every account into accounts/usage.cache
 """
 import fcntl, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 
@@ -19,6 +23,7 @@ CREDS = os.path.join(CLAUDE_DIR, ".credentials.json")
 CONFIG = os.path.join(HOME, ".claude.json")
 SLOTS = os.path.join(CLAUDE_DIR, "accounts")
 ACTIVE = os.path.join(SLOTS, "active")
+NAMES = os.path.join(SLOTS, "names")
 REFRESH_LOCK = os.path.join(CLAUDE_DIR, ".oauth_refresh.lock")
 USAGE_CACHE = os.path.join(SLOTS, "usage.cache")
 LOCK = os.path.join(SLOTS, ".lock")
@@ -48,6 +53,22 @@ def slot_path(n):
 def slots():
     os.makedirs(SLOTS, mode=0o700, exist_ok=True)
     return sorted(f[:-5] for f in os.listdir(SLOTS) if f.endswith(".json"))
+
+
+def names():
+    """Account names in display order: the names file, then any other saved slot."""
+    try:
+        listed = [l.strip() for l in open(NAMES) if l.strip()]
+    except FileNotFoundError:
+        listed = []
+    return listed + [n for n in slots() if n not in listed]
+
+
+def set_names(new):
+    os.makedirs(SLOTS, mode=0o700, exist_ok=True)
+    with open(NAMES + ".tmp", "w") as f:
+        f.write("".join(f"{n}\n" for n in new))
+    os.replace(NAMES + ".tmp", NAMES)
 
 
 def current():
@@ -139,7 +160,7 @@ def wait_for_refresh_lock():
 
 def switch(n):
     if not os.path.exists(slot_path(n)):
-        sys.exit(f"slot {n} not set up; run: claude-account add {n}")
+        sys.exit(f"account {n} is not signed in; run: claude-account add {n}")
     cur = current()
     if cur == n:
         return
@@ -155,17 +176,58 @@ def switch(n):
     set_active(n)
 
 
-def add(n, use_current):
+# Private-window flags for browsers, keyed by a word in their .desktop id.
+PRIVATE_BROWSERS = [
+    ("firefox", ["firefox", "--private-window"], "org.mozilla.firefox"),
+    ("librewolf", ["librewolf", "--private-window"], "io.gitlab.librewolf-community"),
+    ("chromium", ["chromium-browser", "--incognito"], "org.chromium.Chromium"),
+    ("chrome", ["google-chrome", "--incognito"], "com.google.Chrome"),
+    ("brave", ["brave-browser", "--incognito"], "com.brave.Browser"),
+    ("edge", ["microsoft-edge", "--inprivate"], "com.microsoft.Edge"),
+]
+
+
+def private_browser():
+    """Command that opens a URL in a private window of the default browser (or None)."""
+    try:
+        default = subprocess.run(["xdg-settings", "get", "default-web-browser"],
+                                 capture_output=True, text=True).stdout.lower()
+    except FileNotFoundError:
+        default = ""
+    ordered = sorted(PRIVATE_BROWSERS, key=lambda b: b[0] not in default)
+    for _, cmd, flatpak_id in ordered:
+        if shutil.which(cmd[0]):
+            return cmd
+        if shutil.which("flatpak") and subprocess.run(
+                ["flatpak", "info", flatpak_id], capture_output=True).returncode == 0:
+            return ["flatpak", "run", flatpak_id] + cmd[1:]
+    return None
+
+
+def add(n, use_current, private=False):
     slots()
+    if n not in names():
+        set_names(names() + [n])
     if use_current:
         write_json(slot_path(n), {"credentials": read_json(CREDS),
                                   "oauthAccount": read_json(CONFIG).get("oauthAccount")})
         set_active(n)
-        print(f"saved current login as slot {n}")
+        print(f"saved the current login as account {n}")
         return
     tmp = tempfile.mkdtemp(prefix="claude-login-")
     try:
         env = dict(os.environ, CLAUDE_CONFIG_DIR=tmp)
+        if private:
+            cmd = private_browser()
+            if cmd:
+                opener = os.path.join(tmp, "open-private")
+                with open(opener, "w") as f:
+                    f.write("#!/bin/sh\nexec " + " ".join(cmd) + ' "$1"\n')
+                os.chmod(opener, 0o700)
+                env["BROWSER"] = opener
+                print(f"Opening the sign-in page in a private window ({cmd[-2] if cmd[0] == 'flatpak' else cmd[0]})...", flush=True)
+            else:
+                print("No browser with a private mode found; using the normal browser.", flush=True)
         try:
             subprocess.run(["claude", "auth", "login"], env=env, check=True)
             creds = read_json(os.path.join(tmp, ".credentials.json"))
@@ -173,9 +235,26 @@ def add(n, use_current):
             sys.exit("login not completed; nothing saved")
         acct = read_json(os.path.join(tmp, ".claude.json")).get("oauthAccount")
         write_json(slot_path(n), {"credentials": creds, "oauthAccount": acct})
-        print(f"saved {acct and acct.get('emailAddress')} as slot {n}")
+        print(f"signed in as {acct and acct.get('emailAddress')}, saved as account {n}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def remove(n):
+    if current() == n:
+        sys.exit(f"{n} is the active account; switch to another one first")
+    if os.path.exists(slot_path(n)):
+        os.remove(slot_path(n))
+    print(f"forgot the login for {n}")
+
+
+def init(new_names):
+    if not os.path.exists(NAMES):
+        set_names(new_names or ["1", "2"])
+    first = names()[0]
+    if not slots() and os.path.exists(CREDS):
+        add(first, use_current=True)
+    print("accounts: " + "  ".join(names()))
 
 
 def main():
@@ -184,17 +263,28 @@ def main():
         print(current() or "")
     elif a[0] == "list":
         cur = current()
-        for n in slots():
+        for n in names():
+            if not os.path.exists(slot_path(n)):
+                print(f"  {n}  (not signed in)")
+                continue
             acct = read_json(slot_path(n)).get("oauthAccount") or {}
             print(f"{'*' if n == cur else ' '} {n}  {acct.get('emailAddress', '?')}  "
                   f"{acct.get('organizationName', '')}")
+    elif a[0] == "init":
+        init(a[1:])
+    elif a[0] == "remove" and len(a) == 2:
+        remove(a[1])
     elif a[0] == "switch" and len(a) == 2:
         with locked():
             switch(a[1])
     elif a[0] == "usage":
         usage()
     elif a[0] == "add" and len(a) >= 2:
-        add(a[1], "--current" in a)
+        add(a[1], "--current" in a, private="--private" in a)
+        if "--switch" in a:
+            with locked():
+                switch(a[1])
+            print(f"switched to {a[1]}")
     else:
         sys.exit(__doc__)
 
