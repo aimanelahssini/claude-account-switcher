@@ -127,6 +127,10 @@ def refresh_slot(n, slot):
 
 def usage():
     cur = current()
+    try:
+        previous = read_json(USAGE_CACHE)
+    except (FileNotFoundError, ValueError):
+        previous = {}
     out = {}
     for n in slots():
         try:
@@ -134,6 +138,11 @@ def usage():
                 slot = read_json(slot_path(n))
                 if n == cur:
                     oauth = read_json(CREDS)["claudeAiOauth"]
+                    # Claude Code renews the live token itself on its next request; until
+                    # then keep showing the last numbers rather than a failed lookup.
+                    if oauth["expiresAt"] / 1000 < time.time() and previous.get(n, {}).get("pct") is not None:
+                        out[n] = dict(previous[n], stale=True)
+                        continue
                 else:
                     oauth = slot["credentials"]["claudeAiOauth"]
                     if oauth["expiresAt"] / 1000 < time.time() + 60:
@@ -142,7 +151,9 @@ def usage():
             five = http_json(USAGE_URL, token=token).get("five_hour") or {}
             out[n] = {"pct": five.get("utilization"), "resets_at": five.get("resets_at")}
         except Exception as e:
-            out[n] = {"pct": None, "error": str(e)[:200]}
+            last = previous.get(n, {})
+            out[n] = dict(last, stale=True, error=str(e)[:200]) if last.get("pct") is not None \
+                else {"pct": None, "error": str(e)[:200]}
     out["_at"] = int(time.time())
     with open(USAGE_CACHE + ".tmp", "w") as f:
         json.dump(out, f)
