@@ -1,0 +1,14 @@
+{
+  "uuid": "claude-account-switcher@aimanelahssini",
+  "name": "Claude Account Switcher",
+  "description": "Switch Claude Code between accounts from the top bar, with live 5-hour usage per account. Unofficial; not affiliated with Anthropic.",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50"
+  ],
+  "url": "https://github.com/aimanelahssini/claude-account-switcher"
+}

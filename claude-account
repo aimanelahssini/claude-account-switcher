@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Switch Claude Code between saved accounts by swapping ~/.claude/.credentials.json.
+
+A running Claude Code session notices the credentials file changed (mtime) and
+uses the new login on its next request, so the current chat just continues.
+
+  claude-account current        print active slot number
+  claude-account list           show slots
+  claude-account switch N       make slot N active
+  claude-account add N          log in a new account into slot N (browser login)
+  claude-account add N --current  save the account logged in right now as slot N
+  claude-account usage          fetch 5-hour usage % for every slot into accounts/usage.cache
+"""
+import fcntl, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
+
+HOME = os.path.expanduser("~")
+CLAUDE_DIR = os.path.join(HOME, ".claude")
+CREDS = os.path.join(CLAUDE_DIR, ".credentials.json")
+CONFIG = os.path.join(HOME, ".claude.json")
+SLOTS = os.path.join(CLAUDE_DIR, "accounts")
+ACTIVE = os.path.join(SLOTS, "active")
+REFRESH_LOCK = os.path.join(CLAUDE_DIR, ".oauth_refresh.lock")
+USAGE_CACHE = os.path.join(SLOTS, "usage.cache")
+LOCK = os.path.join(SLOTS, ".lock")
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+
+def read_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def write_json(path, data, mode=0o600):
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def slot_path(n):
+    return os.path.join(SLOTS, f"{n}.json")
+
+
+def slots():
+    os.makedirs(SLOTS, mode=0o700, exist_ok=True)
+    return sorted(f[:-5] for f in os.listdir(SLOTS) if f.endswith(".json"))
+
+
+def current():
+    try:
+        return open(ACTIVE).read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def set_active(n):
+    with open(ACTIVE + ".tmp", "w") as f:
+        f.write(f"{n}\n")
+    os.replace(ACTIVE + ".tmp", ACTIVE)
+
+
+def save_live_into(n):
+    """Store the live login (with any tokens Claude refreshed meanwhile) into slot n."""
+    slot = read_json(slot_path(n)) if os.path.exists(slot_path(n)) else {}
+    slot["credentials"] = read_json(CREDS)
+    acct = read_json(CONFIG).get("oauthAccount")
+    # Only take oauthAccount if it still belongs to this slot (a running session may not
+    # have rewritten it yet after a switch).
+    if acct and (not slot.get("oauthAccount") or
+                 acct.get("accountUuid") == slot["oauthAccount"].get("accountUuid")):
+        slot["oauthAccount"] = acct
+    write_json(slot_path(n), slot)
+
+
+def locked():
+    os.makedirs(SLOTS, mode=0o700, exist_ok=True)
+    f = open(LOCK, "w")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+
+def http_json(url, data=None, token=None):
+    headers = {"User-Agent": "claude-account", "Content-Type": "application/json"}
+    if token:
+        headers |= {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"}
+    body = json.dumps(data).encode() if data is not None else None
+    with urllib.request.urlopen(urllib.request.Request(url, body, headers), timeout=15) as r:
+        return json.load(r)
+
+
+def refresh_slot(n, slot):
+    """Renew an inactive slot's expired access token (the live one is Claude's job)."""
+    oauth = slot["credentials"]["claudeAiOauth"]
+    r = http_json(TOKEN_URL, {"grant_type": "refresh_token", "client_id": CLIENT_ID,
+                              "refresh_token": oauth["refreshToken"],
+                              "scope": " ".join(oauth.get("scopes", []))})
+    oauth["accessToken"] = r["access_token"]
+    oauth["refreshToken"] = r.get("refresh_token", oauth["refreshToken"])
+    oauth["expiresAt"] = int((time.time() + r["expires_in"]) * 1000)
+    write_json(slot_path(n), slot)
+
+
+def usage():
+    cur = current()
+    out = {}
+    for n in slots():
+        try:
+            with locked():
+                slot = read_json(slot_path(n))
+                if n == cur:
+                    oauth = read_json(CREDS)["claudeAiOauth"]
+                else:
+                    oauth = slot["credentials"]["claudeAiOauth"]
+                    if oauth["expiresAt"] / 1000 < time.time() + 60:
+                        refresh_slot(n, slot)
+                token = oauth["accessToken"]
+            five = http_json(USAGE_URL, token=token).get("five_hour") or {}
+            out[n] = {"pct": five.get("utilization"), "resets_at": five.get("resets_at")}
+        except Exception as e:
+            out[n] = {"pct": None, "error": str(e)[:200]}
+    out["_at"] = int(time.time())
+    with open(USAGE_CACHE + ".tmp", "w") as f:
+        json.dump(out, f)
+    os.replace(USAGE_CACHE + ".tmp", USAGE_CACHE)
+    for n in slots():
+        print(n, out[n].get("pct"), out[n].get("error", ""))
+
+
+def wait_for_refresh_lock():
+    for _ in range(50):
+        if not os.path.exists(REFRESH_LOCK):
+            return
+        time.sleep(0.2)
+
+
+def switch(n):
+    if not os.path.exists(slot_path(n)):
+        sys.exit(f"slot {n} not set up; run: claude-account add {n}")
+    cur = current()
+    if cur == n:
+        return
+    wait_for_refresh_lock()
+    if cur and os.path.exists(slot_path(cur)) and os.path.exists(CREDS):
+        save_live_into(cur)
+    target = read_json(slot_path(n))
+    write_json(CREDS, target["credentials"])
+    if target.get("oauthAccount"):
+        cfg = read_json(CONFIG)
+        cfg["oauthAccount"] = target["oauthAccount"]
+        write_json(CONFIG, cfg, mode=os.stat(CONFIG).st_mode & 0o777)
+    set_active(n)
+
+
+def add(n, use_current):
+    slots()
+    if use_current:
+        write_json(slot_path(n), {"credentials": read_json(CREDS),
+                                  "oauthAccount": read_json(CONFIG).get("oauthAccount")})
+        set_active(n)
+        print(f"saved current login as slot {n}")
+        return
+    tmp = tempfile.mkdtemp(prefix="claude-login-")
+    try:
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=tmp)
+        try:
+            subprocess.run(["claude", "auth", "login"], env=env, check=True)
+            creds = read_json(os.path.join(tmp, ".credentials.json"))
+        except (subprocess.CalledProcessError, FileNotFoundError, KeyboardInterrupt):
+            sys.exit("login not completed; nothing saved")
+        acct = read_json(os.path.join(tmp, ".claude.json")).get("oauthAccount")
+        write_json(slot_path(n), {"credentials": creds, "oauthAccount": acct})
+        print(f"saved {acct and acct.get('emailAddress')} as slot {n}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main():
+    a = sys.argv[1:]
+    if not a or a[0] == "current":
+        print(current() or "")
+    elif a[0] == "list":
+        cur = current()
+        for n in slots():
+            acct = read_json(slot_path(n)).get("oauthAccount") or {}
+            print(f"{'*' if n == cur else ' '} {n}  {acct.get('emailAddress', '?')}  "
+                  f"{acct.get('organizationName', '')}")
+    elif a[0] == "switch" and len(a) == 2:
+        with locked():
+            switch(a[1])
+    elif a[0] == "usage":
+        usage()
+    elif a[0] == "add" and len(a) >= 2:
+        add(a[1], "--current" in a)
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

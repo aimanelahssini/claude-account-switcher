@@ -1,0 +1,24 @@
+.claude-acct-box { spacing: 2px; }
+.claude-acct-tag { color: rgba(255,255,255,0.7); padding-right: 4px; }
+.claude-acct-btn {
+  padding: 0 6px; margin: 2px 0; border-radius: 6px;
+  color: rgba(255,255,255,0.55);
+}
+.claude-acct-btn:hover { background-color: rgba(255,255,255,0.12); }
+.claude-acct-btn.active { color: #fff; }
+.claude-acct-inner { spacing: 2px; }
+.claude-acct-row { spacing: 4px; }
+.claude-acct-name { font-weight: bold; }
+.claude-acct-pct { font-size: 0.85em; font-feature-settings: "tnum"; }
+.claude-acct-btn.active .claude-acct-name { color: #d97757; }
+.claude-acct-track {
+  width: 44px; height: 4px; border-radius: 2px;
+  background-color: rgba(255,255,255,0.18);
+}
+.claude-acct-fill { height: 4px; border-radius: 2px; background-color: rgba(255,255,255,0.45); }
+.claude-acct-btn.active .claude-acct-fill { background-color: #d97757; }
+
+.claude-acct-tooltip {
+  background-color: rgba(30,30,30,0.95); color: #fff; border-radius: 8px;
+  padding: 6px 10px; font-size: 0.9em;
+}
