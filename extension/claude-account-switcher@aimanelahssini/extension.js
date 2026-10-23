@@ -622,7 +622,7 @@ export default class ClaudeAccountExtension extends Extension {
         box.add_child(new St.Label({text: since ? `Recorded since ${dayName(since).replace(/^(Today|Yesterday)$/, d => d.toLowerCase())} ${since.format('%H:%M')}` +
             ' · claude-account history' : 'claude-account history', style_class: 'claude-acct-history-foot'}));
         if (inTokens)
-            box.add_child(new St.Label({text: 'Input, output and cache writes, from Claude Code on this computer',
+            box.add_child(new St.Label({text: 'Input, output and cache writes, on this computer',
                 style_class: 'claude-acct-history-foot'}));
     }
 
