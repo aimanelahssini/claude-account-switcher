@@ -28,6 +28,10 @@ const SHIMMER = '#eb9f7f';
 // [x, y, width, height] in quarter-character cells (twice as tall as wide on screen).
 const MASCOT = [[2, 0, 12, 4], [0, 2, 16, 1], [3, 4, 1, 1], [5, 4, 1, 1], [10, 4, 1, 1], [12, 4, 1, 1]];
 const MASCOT_EYES = [[4, 1], [11, 1]];
+// Pixel sizes of those cells at 30x19 (the stylesheet's size): the arm tips and the legs are a
+// pixel shorter, so every eye and leg stays the same size.
+const MASCOT_COLS = [1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1];
+const MASCOT_ROWS = [4, 4, 4, 4, 3];
 // Terminals tried, in order, to run the browser sign-in.
 const TERMINALS = [
     ['xdg-terminal-exec'],
@@ -94,6 +98,37 @@ function readHistory() {
     } catch {
         return [];
     }
+}
+
+// tokens.cache from `claude-account usage`: tokens per account in 10-minute steps.
+function readTokens() {
+    try {
+        const [, bytes] = GLib.file_get_contents(GLib.build_filenamev([SLOTS, 'tokens.cache']));
+        const data = JSON.parse(new TextDecoder().decode(bytes));
+        return {step: data.step ?? 600, accounts: data.accounts ?? {}};
+    } catch {
+        return {step: 600, accounts: {}};
+    }
+}
+
+function tokensBetween(tokens, name, start, end) {
+    let sum = 0;
+    for (const [at, [n]] of Object.entries(tokens.accounts[name] ?? {})) {
+        if (+at >= start && +at < end)
+            sum += n;
+    }
+    return sum;
+}
+
+// 2400000 -> '2.4M', 888800 -> '889k'
+function short(n) {
+    for (const [div, unit] of [[1e9, 'B'], [1e6, 'M'], [1e3, 'k']]) {
+        if (n >= div) {
+            const v = n / div;
+            return `${v < 10 ? +v.toFixed(1) : Math.round(v)}${unit}`;
+        }
+    }
+    return String(Math.round(n));
 }
 
 function dayName(d) {
@@ -209,15 +244,22 @@ export default class ClaudeAccountExtension extends Extension {
     _drawMascot(area) {
         const cr = area.get_context();
         const [w, h] = area.get_surface_size();
-        const sx = w / 16, sy = h / 5;
+        // Cell edges in device pixels, so the pixel art stays sharp at any scale.
+        const edges = (sizes, total) => {
+            const sum = sizes.reduce((a, b) => a + b, 0);
+            let at = 0;
+            return [0, ...sizes.map(v => Math.round((at += v) * total / sum))];
+        };
+        const xs = edges(MASCOT_COLS, w), ys = edges(MASCOT_ROWS, h);
+        const cell = (x, y, cw, ch) => cr.rectangle(xs[x], ys[y], xs[x + cw] - xs[x], ys[y + ch] - ys[y]);
         const c = area.get_theme_node().get_foreground_color();
         cr.setSourceRGBA(c.red / 255, c.green / 255, c.blue / 255, c.alpha / 255);
         for (const [x, y, cw, ch] of MASCOT)
-            cr.rectangle(x * sx, y * sy, cw * sx, ch * sy);
+            cell(x, y, cw, ch);
         cr.fill();
         cr.setOperator(0);  // CLEAR: the eyes are holes
         for (const [x, y] of MASCOT_EYES)
-            cr.rectangle(x * sx, y * sy, sx, sy);
+            cell(x, y, 1, 1);
         cr.fill();
         cr.$dispose();
     }
@@ -229,7 +271,9 @@ export default class ClaudeAccountExtension extends Extension {
         this._spinTimer = null;
         if (!this._spinner)
             return;
+        // The spinner takes the mascot's place while Claude works.
         this._spinner.visible = on;
+        this._mascot.visible = !on;
         if (!on)
             return;
         const verbs = this._verbs();
@@ -289,7 +333,7 @@ export default class ClaudeAccountExtension extends Extension {
         let info;
         while ((info = en.next_file(null))) {
             const n = info.get_name();
-            if (n.endsWith('.json')) saved.push(n.slice(0, -5));
+            if (n.endsWith('.json') && !n.startsWith('.')) saved.push(n.slice(0, -5));
         }
         this._signedIn = new Set(saved);
         const listed = this._readFile('names').split('\n').map(l => l.trim()).filter(Boolean);
@@ -339,7 +383,6 @@ export default class ClaudeAccountExtension extends Extension {
             });
         }
         const active = this._readFile('active').trim();
-        const usage = this._readUsage();
         for (const b of this._buttons) {
             const signedIn = this._signedIn.has(b._slot);
             b._track.opacity = signedIn ? 255 : 0;
@@ -350,7 +393,7 @@ export default class ClaudeAccountExtension extends Extension {
                 b.remove_style_class_name('active');
                 continue;
             }
-            const pct = usage[b._slot]?.pct;
+            const pct = this._pct(b._slot);
             const known = typeof pct === 'number';
             b._pct.text = known ? `${Math.round(pct)}%` : '?';
             const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
@@ -450,7 +493,6 @@ export default class ClaudeAccountExtension extends Extension {
         const menu = b._menu;
         menu.removeAll();
         const active = n === this._readFile('active').trim();
-        const usage = this._readUsage()[n] ?? {};
         let account = {};
         try {
             account = JSON.parse(this._readFile(`${n}.json`)).oauthAccount ?? {};
@@ -469,9 +511,14 @@ export default class ClaudeAccountExtension extends Extension {
         head.add_child(new St.Label({text: [account.emailAddress, account.organizationName].filter(Boolean).join(' · ') ||
             'Claude account', style_class: 'claude-acct-history-who', y_align: Clutter.ActorAlign.CENTER}));
         box.add_child(head);
-        const pct = typeof usage.pct === 'number' ? `${Math.round(usage.pct)}% of the 5-hour limit` : 'Usage unknown';
-        box.add_child(new St.Label({text: `${pct} · ${this._resetText(n).replace(/^R/, 'r')}`,
+        const tokens = readTokens();
+        const win = this._window(n);
+        const pct = this._pct(n);
+        const used = typeof pct === 'number' ? `${Math.round(pct)}% of the 5-hour limit` : 'Usage unknown';
+        const winTokens = win && !win.ended ? tokensBetween(tokens, n, win.end - 5 * HOUR, win.end) : 0;
+        box.add_child(new St.Label({text: winTokens ? `${used} · ${short(winTokens)} tokens` : used,
             style_class: 'claude-acct-history-now'}));
+        box.add_child(new St.Label({text: this._resetText(n), style_class: 'claude-acct-history-reset'}));
 
         // Chart: what each of the last 24 hours used, hover a bar for its numbers
         box.add_child(new St.Label({text: 'Last 24 hours', style_class: 'claude-acct-history-title'}));
@@ -481,9 +528,12 @@ export default class ClaudeAccountExtension extends Extension {
         const chart = new St.DrawingArea({style_class: 'claude-acct-chart', width: 320, height: 84,
             reactive: true, track_hover: true});
         const detail = new St.Label({style_class: 'claude-acct-chart-detail'});
+        const hourTokens = hours.map((_, i) => tokensBetween(tokens, n, firstHour + i * HOUR, firstHour + (i + 1) * HOUR));
         const total = Math.round(hours.reduce((a, b) => a + b, 0));
+        const totalTokens = hourTokens.reduce((a, b) => a + b, 0);
         const summary = () => {
-            detail.text = total ? `${total}% of the 5-hour limit used in the last 24 hours` : 'Nothing used in the last 24 hours';
+            detail.text = !total && !totalTokens ? 'Nothing used in the last 24 hours'
+                : `${total}% of the limit${totalTokens ? `, ${short(totalTokens)} tokens` : ''} in the last 24 hours`;
         };
         summary();
         chart._hovered = -1;
@@ -495,7 +545,7 @@ export default class ClaudeAccountExtension extends Extension {
                 area._hovered = i;
                 const from = GLib.DateTime.new_from_unix_local(firstHour + i * HOUR);
                 detail.text = `${from.format('%H:00')}–${from.add_hours(1).format('%H:00')}  ·  ` +
-                    `${Math.round(hours[i])}% used`;
+                    `${Math.round(hours[i])}% used${hourTokens[i] ? `  ·  ${short(hourTokens[i])} tokens` : ''}`;
                 area.queue_repaint();
             }
             return Clutter.EVENT_PROPAGATE;
@@ -519,14 +569,15 @@ export default class ClaudeAccountExtension extends Extension {
         box.add_child(new St.Label({text: 'Recent 5-hour windows', style_class: 'claude-acct-history-title'}));
         const windows = windowsOf(hist, now - 7 * DAY).slice(0, 6).map(w => {
             const end = GLib.DateTime.new_from_unix_local(w.end);
-            return {end, start: end.add_hours(-5), peak: w.peak};
+            return {end, start: end.add_hours(-5), peak: w.peak, now: w.end - 5 * HOUR <= now && now < w.end,
+                tokens: tokensBetween(tokens, n, w.end - 5 * HOUR, w.end)};
         });
         if (!windows.length)
             box.add_child(new St.Label({text: 'Nothing recorded yet. Usage is saved every minute from now on.',
                 style_class: 'claude-acct-history-empty'}));
         for (const w of windows) {
-            const row = new St.BoxLayout({style_class: 'claude-acct-window'});
-            row.add_child(new St.Label({text: `${dayName(w.start)}  ${w.start.format('%H:%M')}–${w.end.format('%H:%M')}`,
+            const row = new St.BoxLayout({style_class: `claude-acct-window${w.now ? ' now' : ''}`});
+            row.add_child(new St.Label({text: `${w.now ? 'Now' : dayName(w.start)}  ${w.start.format('%H:%M')}–${w.end.format('%H:%M')}`,
                 style_class: 'claude-acct-window-when', x_expand: true, y_align: Clutter.ActorAlign.CENTER}));
             const track = new St.Widget({style_class: 'claude-acct-window-track', y_align: Clutter.ActorAlign.CENTER});
             const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
@@ -535,12 +586,16 @@ export default class ClaudeAccountExtension extends Extension {
             row.add_child(track);
             row.add_child(new St.Label({text: `${Math.round(w.peak)}%`, style_class: 'claude-acct-window-pct',
                 y_align: Clutter.ActorAlign.CENTER}));
+            row.add_child(new St.Label({text: w.tokens ? short(w.tokens) : '', style_class: 'claude-acct-window-tokens',
+                y_align: Clutter.ActorAlign.CENTER}));
             box.add_child(row);
         }
 
         const since = hist.length ? GLib.DateTime.new_from_unix_local(hist[0].t) : null;
         box.add_child(new St.Label({text: since ? `Recorded since ${dayName(since).replace(/^(Today|Yesterday)$/, d => d.toLowerCase())} ${since.format('%H:%M')}` +
             ' · claude-account history' : 'claude-account history', style_class: 'claude-acct-history-foot'}));
+        box.add_child(new St.Label({text: 'Tokens: input, output and cache writes, from Claude Code on this computer',
+            style_class: 'claude-acct-history-foot'}));
     }
 
     // 24 orange bars, one per hour, scaled to the busiest hour (at least 20%).
@@ -576,19 +631,39 @@ export default class ClaudeAccountExtension extends Extension {
         cr.$dispose();
     }
 
+    // The account's current 5-hour window from its last reading: {end (unix), ended}.
+    _window(slot) {
+        const end = resetTime(this._readUsage()[slot]?.resets_at);
+        return end ? {end, ended: end <= Date.now() / 1000} : null;
+    }
+
+    // A window that has ended means the limit is back to 0, even before the next reading.
+    _pct(slot) {
+        const pct = this._readUsage()[slot]?.pct;
+        return typeof pct === 'number' && this._window(slot)?.ended ? 0 : pct;
+    }
+
     _resetText(slot) {
         const u = this._readUsage()[slot];
         if (!u || typeof u.pct !== 'number')
             return 'Usage unknown';
         if (!u.resets_at)
-            return 'No usage in this window yet';
+            return 'No 5-hour window running: the next one starts with your next message';
         const reset = GLib.DateTime.new_from_iso8601(u.resets_at, null);
         if (!reset)
             return 'Usage unknown';
+        if (this._window(slot).ended)
+            return `Limit reset at ${reset.to_local().format('%H:%M')}: the next window starts with your next message`;
         const mins = Math.max(0, Math.ceil(reset.difference(GLib.DateTime.new_now_utc()) / 60e6));
         const left = mins >= 60 ? `${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')} min`
             : `${mins} min`;
         return `Resets in ${left} (at ${reset.to_local().format('%H:%M')})`;
+    }
+
+    _accountTip(slot) {
+        const win = this._window(slot);
+        const n = win && !win.ended ? tokensBetween(readTokens(), slot, win.end - 5 * HOUR, win.end) : 0;
+        return n ? `${this._resetText(slot)} · ${short(n)} tokens so far` : this._resetText(slot);
     }
 
     _showTooltip(b) {
@@ -603,7 +678,7 @@ export default class ClaudeAccountExtension extends Extension {
             this._tooltip.text = 'Add a Claude account';
         else
             this._tooltip.text = this._signedIn.has(b._slot)
-                ? this._resetText(b._slot) : 'Not signed in. Click to sign in.';
+                ? this._accountTip(b._slot) : 'Not signed in. Click to sign in.';
         this._tooltip.show();
         const [x, y] = b.get_transformed_position();
         const [w, h] = b.get_transformed_size();

@@ -41,6 +41,14 @@ LOCK = os.path.join(SLOTS, ".lock")
 OPTION_OFF = {"auto-switch": os.path.join(SLOTS, "auto-switch-off"),
               "keep-awake": os.path.join(SLOTS, "keep-awake-off")}
 WINDOW_JITTER = 600  # the API's reset time wobbles by a second or so between readings
+# Tokens per account (tokens.cache), from Claude Code's own transcripts on this computer, in 10-minute steps:
+# {"step": 600, "accounts": {name: {step start: [tokens, cache reads]}}}. "tokens" is input +
+# output + cache writes; cache reads are kept apart since they're cheap and huge.
+TOKENS = os.path.join(SLOTS, "tokens.cache")  # not .json: those are accounts
+TOKENS_STATE = os.path.join(SLOTS, ".tokens-state")  # how far each transcript was read
+TOKENS_STEP = 600
+TOKENS_DAYS = 8
+PROJECTS = os.path.join(CLAUDE_DIR, "projects")
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -66,7 +74,7 @@ def slot_path(n):
 
 def slots():
     os.makedirs(SLOTS, mode=0o700, exist_ok=True)
-    return sorted(f[:-5] for f in os.listdir(SLOTS) if f.endswith(".json"))
+    return sorted(f[:-5] for f in os.listdir(SLOTS) if f.endswith(".json") and not f.startswith("."))
 
 
 def names():
@@ -216,16 +224,114 @@ def windows(name, days=7):
     return sorted(((end - 5 * 3600, end, peak) for end, peak in rounded), reverse=True)
 
 
+def account_at(switches, t):
+    """The account that was active at time t, from the switches in the history."""
+    who = None
+    for st, n in switches:
+        if st > t:
+            break
+        who = n
+    if who is None and not switches:
+        who = current()
+    return who
+
+
+def index_tokens():
+    """Add what Claude Code's transcripts gained since last time to tokens.cache."""
+    try:
+        state = read_json(TOKENS_STATE)
+    except (FileNotFoundError, ValueError):
+        state = {}
+    try:
+        data = read_json(TOKENS)
+    except (FileNotFoundError, ValueError):
+        data = {}
+    files, seen = state.get("files", {}), state.get("seen", [])
+    seen_set = set(seen)
+    accounts = data.get("accounts", {})
+    switches = [(e["t"], e["switch"]) for e in read_history() if "switch" in e]
+    cutoff = time.time() - TOKENS_DAYS * 86400
+    new_files = {}
+    for root, _, names_ in os.walk(PROJECTS):
+        for fn in names_:
+            if not fn.endswith(".jsonl"):
+                continue
+            path = os.path.join(root, fn)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if st.st_mtime < cutoff:
+                continue
+            offset, ino = files.get(path, [0, st.st_ino])
+            if ino != st.st_ino or st.st_size < offset:
+                offset = 0
+            if st.st_size > offset:
+                with open(path, "rb") as f:
+                    f.seek(offset)
+                    chunk = f.read(st.st_size - offset)
+                end = chunk.rfind(b"\n") + 1  # a line still being written waits for next time
+                for line in chunk[:end].splitlines():
+                    if b'"usage"' not in line or b'"assistant"' not in line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                        msg = e["message"]
+                        u = msg["usage"]
+                        t = datetime.datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00")).timestamp()
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        continue
+                    key = msg.get("id") or e.get("requestId")
+                    if t < cutoff or not key or key in seen_set:
+                        continue  # Claude Code writes one line per content block, same usage
+                    seen_set.add(key)
+                    seen.append(key)
+                    who = account_at(switches, t)
+                    if who is None:
+                        continue
+                    bucket = str(int(t // TOKENS_STEP * TOKENS_STEP))
+                    slot = accounts.setdefault(who, {}).setdefault(bucket, [0, 0])
+                    slot[0] += sum(u.get(k) or 0 for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))
+                    slot[1] += u.get("cache_read_input_tokens") or 0
+                offset += end
+            new_files[path] = [offset, st.st_ino]
+    for buckets in accounts.values():
+        for b in [b for b in buckets if int(b) < cutoff]:
+            del buckets[b]
+    write_json(TOKENS, {"step": TOKENS_STEP, "accounts": accounts}, mode=0o600)
+    write_json(TOKENS_STATE, {"files": new_files, "seen": seen[-5000:]}, mode=0o600)
+    return accounts
+
+
+def tokens_between(accounts, name, start, end):
+    return sum(v[0] for b, v in accounts.get(name, {}).items() if start <= int(b) < end)
+
+
+def short(n):
+    for div, unit in ((1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if n >= div:
+            v = n / div
+            return (f"{v:.1f}".rstrip("0").rstrip(".") if v < 10 else f"{v:.0f}") + unit
+    return str(int(n))
+
+
 def history(name=None):
     for n in ([name] if name else names()):
         print(f"{n}:")
         rows = windows(n)
         if not rows:
             print("  no history yet (it's recorded from the first usage check on)")
+        try:
+            accounts = read_json(TOKENS).get("accounts", {})
+        except (FileNotFoundError, ValueError):
+            accounts = {}
         for start, end, peak in rows[:10]:
             s, e = datetime.datetime.fromtimestamp(start), datetime.datetime.fromtimestamp(end)
             bar = "█" * round(peak / 10) + "·" * (10 - round(peak / 10))
-            print(f"  {s:%a %d %b %H:%M}–{e:%H:%M}  {bar} {peak:3.0f}%")
+            tokens = tokens_between(accounts, n, start, end)
+            now = "  now" if start <= time.time() < end else ""
+            print(f"  {s:%a %d %b %H:%M}–{e:%H:%M}  {bar} {peak:3.0f}%"
+                  f"{f'  {short(tokens)} tokens' if tokens else ''}{now}")
 
 
 def usage():
@@ -260,6 +366,10 @@ def usage():
     out["_at"] = int(time.time())
     try:
         record_readings(out)
+    except OSError:
+        pass
+    try:
+        index_tokens()
     except OSError:
         pass
     with open(USAGE_CACHE + ".tmp", "w") as f:

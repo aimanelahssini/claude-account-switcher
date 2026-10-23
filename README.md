@@ -18,7 +18,8 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
   with its full history. No `/login`, no restart.
 - **Live usage.** Each account shows its 5-hour usage in percent, refreshed every minute.
   The selected account has an orange bar, the other a grey one.
-- **Reset time.** Hover an account to see when its limit resets.
+- **Tokens too.** Hover an account for when its limit resets and how many tokens this 5-hour
+  window has used so far; the history panel shows tokens per window and per hour.
 - **Automatic switch at 100%.** When the account you're on reaches its 5-hour limit, it
   switches to the signed-in account with the most room left and tells you in a notification.
 - **Usage history.** Click the account you're on (or right-click any account) for how much
@@ -27,13 +28,13 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 - **Add accounts from the top bar.** Click **+**, type a name (anything short: `2`, `work`,
   `-`), and sign in in a **private window**, so your browser can't quietly reuse the Claude
   account it's already logged in to. Once you're in, that account becomes active.
-- **Shows when Claude is working.** Claude Code's mascot sits in the top bar: grey when
-  Claude is idle, orange with Claude Code's own spinner next to it while it works (see below).
+- **Shows when Claude is working.** Claude Code's mascot sits in the top bar while Claude is
+  idle; while it works, Claude Code's own spinner takes its place (see below).
 - **No sleep while Claude works.** Close the lid mid-task and the laptop keeps going until
   Claude is done, then does what closing the lid normally does.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
-<p align="center"><img src="docs/history.png" width="427" alt="History panel under the active account: current usage and reset time, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak usage"></p>
+<p align="center"><img src="docs/history.png" width="446" alt="History panel under the active account: current usage and reset time, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak usage and tokens"></p>
 
 ## Options
 
@@ -50,13 +51,19 @@ From the terminal: `claude-account keep-awake on|off` and `claude-account auto-s
 
 ## While Claude works
 
-<p align="center"><img src="docs/working.gif" width="389" alt="The grey mascot turns orange and Claude Code's spinner appears next to it: a cycling star and the word Choreographing… with a light glimmer moving across it"></p>
+<p align="center"><img src="docs/working.gif" width="343" alt="The grey mascot is replaced by Claude Code's spinner: a cycling star and the word Choreographing… with a light glimmer moving across it"></p>
 
-As soon as you send Claude Code a message, the mascot turns orange and the spinner from
-your terminal appears next to it: the same cycling star, the same orange with its moving
-glimmer, and a word from Claude Code's own list, a new one each time it starts working
-(your `spinnerVerbs` setting counts too). When Claude is done, or waiting for you, it goes
-back to grey.
+As soon as you send Claude Code a message, the spinner from your terminal takes the
+mascot's place: the same cycling star, the same orange with its moving glimmer, and a word
+from Claude Code's own list of 187, picked at random each time Claude starts working (your
+`spinnerVerbs` setting counts too). When Claude is done, or waiting for you, the mascot
+comes back.
+
+The word is picked separately from the one in your terminal, so the two usually differ:
+Claude Code doesn't tell other programs which word it chose. The terminal also shows states
+only Claude Code itself can see, from the reply as it streams in: amber and "thinking" while
+Claude thinks, red when the reply stalls. The top bar shows the part that is known from
+outside: whether Claude is working at all.
 
 Meanwhile the computer doesn't go to sleep:
 
@@ -66,7 +73,7 @@ Meanwhile the computer doesn't go to sleep:
   stay awake for nothing.
 - Choosing **Suspend** or **Power Off** yourself still works right away.
 
-<p align="center"><img src="docs/working-tooltip.png" width="418" alt="Tooltip under the mascot: Claude is working: no sleep until it's done, lid closed or not"></p>
+<p align="center"><img src="docs/working-tooltip.png" width="452" alt="Tooltip under the mascot: Claude is working: no sleep until it's done, lid closed or not"></p>
 
 This comes from `claude-busy`, a small shell script that Claude Code's
 [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) call: when you send a message
@@ -82,6 +89,23 @@ working.
 It's light: a hook call takes about 5 ms, nothing runs while Claude is idle, and the top bar
 reacts to files appearing and disappearing instead of polling. The spinner redraws a short
 label every 120 ms only while Claude works.
+
+## The 5-hour window, and tokens
+
+A 5-hour window starts with the first message you send after the previous one has ended,
+and lasts 5 hours. The percentage is how much of that window's limit you've used; at the
+end it goes back to 0. If you haven't used an account since its window ended, there is no
+window running: the next one starts with your next message, so the last window listed can
+have ended a while ago. The panel marks the window that's running as **Now**, and
+an account whose window has ended shows 0% and *Limit reset at …*.
+
+Anthropic only reports the percentage. Tokens are counted from Claude Code's own
+transcripts on this computer (`~/.claude/projects`): input, output and cache writes, without
+cache reads, which are cheap and would dwarf everything else. Each message counts toward the
+account that was active when it was sent. Claude Code on other computers isn't included, and
+tokens are only known from the first usage check after installing. They're saved in
+`~/.claude/accounts/tokens.cache` (8 days, per 10 minutes); reading the transcripts takes
+about a second the first time, then a few milliseconds a minute.
 
 ## How it works
 
@@ -125,7 +149,7 @@ From the terminal, `claude-account add NAME --private` does the same with the na
 | `claude-account current` | Print the active account |
 | `claude-account list` | List saved accounts |
 | `claude-account usage` | Fetch 5-hour usage for every account |
-| `claude-account history [NAME]` | Recent 5-hour windows and how high each went |
+| `claude-account history [NAME]` | Recent 5-hour windows, how high each went, and their tokens |
 | `claude-account auto-switch on\|off` | Switch accounts automatically at 100% (on by default) |
 | `claude-account keep-awake on\|off` | Keep the computer awake while Claude works (on by default) |
 | `claude-busy status` | Which Claude Code sessions are working right now |

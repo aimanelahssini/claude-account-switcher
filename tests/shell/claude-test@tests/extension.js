@@ -64,6 +64,7 @@ async function run() {
     const idle = color(mascot);
     check('idle: not busy', ext._busy === false && !tag.has_style_class_name('busy'));
     check('idle: no spinner', !ext._spinTimer && !ext._spinner.visible);
+    check('idle: mascot 30x19', mascot.width === 30 && mascot.height === 19, `${mascot.width}x${mascot.height}`);
     await shot('idle', ext);
 
     GLib.file_set_contents(`${BUSY}/0a1b2c3d-test`, '1\n');
@@ -71,6 +72,7 @@ async function run() {
     check('busy: tag marked', ext._busy === true && tag.has_style_class_name('busy'));
     check('busy: orange mascot', color(mascot) === '#d77757ff', `${idle} -> ${color(mascot)}`);
     check('busy: spinner shown', ext._spinner.visible && !!ext._spinTimer);
+    check('busy: mascot makes room', !mascot.visible);
     // run.sh sets spinnerVerbs to replace Claude Code's words with one
     check('busy: spinnerVerbs setting', ext._verb.text === 'Choreographing…', ext._verb.text);
     // Frames every 120 ms, two glyph cycles (for docs/working.gif).
@@ -103,7 +105,7 @@ async function run() {
     GLib.file_set_contents(`${BUSY}/.holder`, '1\n');
     GLib.unlink(`${BUSY}/0a1b2c3d-test`);
     await sleep(600);
-    check('done: grey again', ext._busy === false && color(mascot) === idle && !ext._spinner.visible, color(mascot));
+    check('done: grey again', ext._busy === false && color(mascot) === idle && !ext._spinner.visible && mascot.visible, color(mascot));
     check('done: timer stopped', !ext._spinTimer);
 
     // Disable / enable keeps working.
@@ -161,10 +163,12 @@ async function run() {
     await sleep(700);
     const all = a => [a, ...a.get_children().flatMap(all)];
     const rows = all(b1._menu.box).filter(c => c.has_style_class_name?.('claude-acct-window'));
-    check('history: three windows', rows.length === 3, rows.map(r => r.get_children()[0].text).join(' | '));
+    check('history: three windows', rows.length === 3, rows.map(r => r.get_children().map(c => c.text).filter(Boolean).join(' ')).join(' | '));
+    check('history: current window says Now', rows[0].get_children()[0].text.startsWith('Now') && !rows[1].get_children()[0].text.startsWith('Now'));
+    check('history: tokens per window', rows.every(r => /^\d/.test(r.get_children().at(-1).text)));
     const chart = all(b1._menu.box).find(c => c.has_style_class_name?.('claude-acct-chart'));
     const detail = all(b1._menu.box).find(c => c.has_style_class_name?.('claude-acct-chart-detail'));
-    check('history: chart', !!chart, detail?.text);
+    check('history: chart', !!chart && /tokens in the last 24 hours$/.test(detail?.text), detail?.text);
     await shot('history', ext, false, b1._menu.actor);
     // Hover a bar: the line under the chart shows that hour.
     const [cx, cy] = chart.get_transformed_position();
@@ -174,6 +178,22 @@ async function run() {
     await sleep(400);
     check('history: hover shows an hour', /^\d\d:00–\d\d:00/.test(detail.text), detail.text);
     b1._menu.close();
+    await sleep(400);
+
+    // Tooltip: reset time and this window's tokens.
+    b1.hover = true;
+    await sleep(300);
+    check('tooltip: tokens', /Resets in .* · [\d.]+[kM] tokens so far$/.test(ext._tooltip.text), ext._tooltip.text);
+    b1.hover = false;
+
+    // A window that has ended: 0%, and says so, before the next reading comes in.
+    const cache = JSON.parse(new TextDecoder().decode(GLib.file_get_contents(`${accounts}/usage.cache`)[1]));
+    cache['2'] = {pct: 100, resets_at: GLib.DateTime.new_now_utc().add_minutes(-16).format_iso8601()};
+    GLib.file_set_contents(`${accounts}/usage.cache`, JSON.stringify(cache));
+    await sleep(600);
+    const b2 = ext._buttons.find(b => b._slot === '2');
+    check('ended window: 0%', b2._pct.text === '0%', b2._pct.text);
+    check('ended window: says so', ext._resetText('2').startsWith('Limit reset at'), ext._resetText('2'));
     out('DONE');
 }
 

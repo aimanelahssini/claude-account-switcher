@@ -49,9 +49,9 @@
 
 /* Claude Code's mascot: grey, orange with Claude Code's spinner while Claude works */
 .claude-acct-tag-box { spacing: 6px; }
-.claude-acct-mascot { width: 32px; height: 20px; color: rgba(255,255,255,0.7); }
+.claude-acct-mascot { width: 30px; height: 19px; color: rgba(255,255,255,0.7); }
 .claude-acct-tag.busy .claude-acct-mascot { color: #d77757; }
-.claude-acct-spinner { font-family: monospace; color: #d77757; }
+.claude-acct-spinner { font-family: monospace; font-size: 0.96em; color: #d77757; }
 .claude-acct-spinner-glyph { width: 1.4em; text-align: center; }
 
 /* Options menu (click the mascot) */
@@ -59,3 +59,8 @@
 .claude-acct-menu-hint-item { padding-top: 0; }
 .claude-acct-menu-hint { color: rgba(255,255,255,0.5); font-size: 0.85em; }
 .claude-acct-chart-detail { font-size: 0.85em; color: rgba(255,255,255,0.75); font-feature-settings: "tnum"; }
+
+/* Tokens, the running window, the reset line */
+.claude-acct-history-reset { color: rgba(255,255,255,0.6); font-size: 0.9em; }
+.claude-acct-window.now .claude-acct-window-when { color: #fff; font-weight: bold; }
+.claude-acct-window-tokens { width: 44px; text-align: right; font-size: 0.85em; color: rgba(255,255,255,0.5); font-feature-settings: "tnum"; }
