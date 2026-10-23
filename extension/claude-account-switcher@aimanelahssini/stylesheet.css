@@ -1,5 +1,5 @@
 .claude-acct-box { spacing: 2px; }
-.claude-acct-tag { color: rgba(255,255,255,0.7); padding-right: 4px; }
+.claude-acct-tag { padding-right: 4px; }
 .claude-acct-btn {
   padding: 0 6px; margin: 2px 0; border-radius: 6px;
   color: rgba(255,255,255,0.55);
@@ -47,3 +47,10 @@
 .claude-acct-window-pct { width: 40px; text-align: right; font-size: 0.9em; font-feature-settings: "tnum"; }
 .claude-acct-history-empty { color: rgba(255,255,255,0.5); font-size: 0.9em; }
 .claude-acct-history-foot { margin-top: 8px; font-size: 0.75em; color: rgba(255,255,255,0.4); }
+
+/* Claude Code's mascot: grey, orange with Claude Code's spinner while Claude works */
+.claude-acct-tag { spacing: 6px; }
+.claude-acct-mascot { width: 32px; height: 20px; color: rgba(255,255,255,0.7); }
+.claude-acct-tag.busy .claude-acct-mascot { color: #d77757; }
+.claude-acct-spinner { font-family: monospace; color: #d77757; }
+.claude-acct-spinner-glyph { width: 1.4em; text-align: center; }

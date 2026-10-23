@@ -24,9 +24,48 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 - **Add accounts from the top bar.** Click **+**, type a name (anything short: `2`, `work`,
   `-`), and sign in in a **private window**, so your browser can't quietly reuse the Claude
   account it's already logged in to. Once you're in, that account becomes active.
+- **Shows when Claude is working.** Claude Code's mascot sits in the top bar: grey when
+  Claude is idle, orange with Claude Code's own spinner next to it while it works (see below).
+- **No sleep while Claude works.** Close the lid mid-task and the laptop keeps going until
+  Claude is done, then does what closing the lid normally does.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
 <p align="center"><img src="docs/history.png" width="450" alt="History panel under the active account: current usage and reset time, a chart of the last 24 hours, and recent 5-hour windows with their peak usage"></p>
+
+## While Claude works
+
+<p align="center"><img src="docs/working.gif" width="389" alt="The grey mascot turns orange and Claude Code's spinner appears next to it: a cycling star and the word Choreographing… with a light glimmer moving across it"></p>
+
+As soon as you send Claude Code a message, the mascot turns orange and the spinner from
+your terminal appears next to it: the same cycling star, the same orange with its moving
+glimmer, and a word from Claude Code's own list, a new one each time it starts working
+(your `spinnerVerbs` setting counts too). When Claude is done, or waiting for you, it goes
+back to grey.
+
+Meanwhile the computer doesn't go to sleep:
+
+- **Idle:** GNOME's automatic suspend waits. The screen can still dim and lock as usual.
+- **Lid closed:** the laptop stays on and Claude keeps working. Once the last session is
+  done, the lid's normal action runs (suspend, by default), so a laptop in a bag doesn't
+  stay awake for nothing.
+- Choosing **Suspend** or **Power Off** yourself still works right away.
+
+<p align="center"><img src="docs/working-tooltip.png" width="418" alt="Tooltip under the mascot: Claude is working: no sleep until it's done, lid closed or not"></p>
+
+This comes from `claude-busy`, a small shell script that Claude Code's
+[hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) call: when you send a message
+and around each tool call it marks the session as working (one tiny file per session in
+`$XDG_RUNTIME_DIR/claude-busy`), and when Claude stops, or has been waiting for you for a
+minute, it clears it. While any session is working, one background `claude-busy hold` keeps
+two inhibitors (`systemd-inhibit --what=handle-lid-switch` and
+`gnome-session-inhibit --inhibit suspend`) and checks every 5 seconds whether it's still
+needed. A session whose `claude` process is gone, or that has had no activity for 20 minutes
+(for example after you stop it with Esc), counts as done. `claude-busy status` shows what's
+working.
+
+It's light: a hook call takes about 5 ms, nothing runs while Claude is idle, and the top bar
+reacts to files appearing and disappearing instead of polling. The spinner redraws a short
+label every 120 ms only while Claude works.
 
 ## How it works
 
@@ -49,6 +88,9 @@ git clone https://github.com/aimanelahssini/claude-account-switcher
 cd claude-account-switcher
 ./install.sh
 ```
+
+The installer also adds the `claude-busy` hooks to `~/.claude/settings.json` (your other
+settings and hooks stay as they are); Claude Code sessions started after that use them.
 
 If Claude Code is already logged in, the installer saves that login as account **1**
 (rename it with `claude-account rename 1 NAME`). Log out and back in once so GNOME loads the
@@ -87,10 +129,13 @@ and the token endpoint to renew an account that hasn't been used for a while.
 
 ## Uninstall
 
+Remove the `claude-busy` hooks from `~/.claude/settings.json` first (every hook whose
+command mentions `claude-busy`), then:
+
 ```bash
 gnome-extensions disable claude-account-switcher@aimanelahssini
 rm -rf ~/.local/share/gnome-shell/extensions/claude-account-switcher@aimanelahssini
-rm ~/.local/bin/claude-account
+rm ~/.local/bin/claude-account ~/.local/bin/claude-busy
 rm -rf ~/.claude/accounts   # deletes the saved logins
 ```
 

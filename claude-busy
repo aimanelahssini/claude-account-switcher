@@ -1,0 +1,89 @@
+#!/bin/sh
+# Keeps the computer awake while Claude Code is working, closed lid included.
+# Claude Code's hooks call it (install.sh adds them to ~/.claude/settings.json):
+#   claude-busy busy    a session started working (a prompt, a tool call)
+#   claude-busy idle    a session is done, or waiting for you
+# Each working session is a file in $XDG_RUNTIME_DIR/claude-busy holding its claude process id.
+# While any exist, a background `claude-busy hold` keeps two inhibitors: logind ignores the lid,
+# and GNOME doesn't suspend when idle. When the last session is done they go, and a lid that is
+# still closed suspends the computer as usual. The top-bar extension turns orange meanwhile.
+DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-busy"
+HOLDER="$DIR/.holder"
+STALE_MINUTES=20   # no hook for this long (e.g. you stopped Claude with Esc) counts as done
+CHECK_SECONDS=5
+
+# The session id from the hook's JSON on stdin (one line), else the claude process id.
+session() {
+    IFS= read -r json || true
+    id=${json#*\"session_id\":\"}
+    id=${id%%\"*}
+    case $id in ''|*[!A-Za-z0-9-]*) id="pid-$1" ;; esac
+}
+
+# The claude process this hook belongs to (hooks may run through a shell).
+claude_pid() {
+    p=$PPID
+    for _ in 1 2 3 4; do
+        [ -r "/proc/$p/stat" ] || break
+        read -r _ comm _ pp _ < "/proc/$p/stat"
+        [ "$comm" = "(claude)" ] && { echo "$p"; return; }
+        p=$pp
+    done
+    echo ""   # not found: no process check, only the quiet-too-long one
+}
+
+holding() {
+    [ -r "$HOLDER" ] && read -r h < "$HOLDER" && kill -0 "$h" 2>/dev/null
+}
+
+# Drop sessions whose claude is gone or that have been quiet too long; true if any are left.
+working() {
+    find "$DIR" -maxdepth 1 -type f ! -name '.*' -mmin +"$STALE_MINUTES" -delete 2>/dev/null
+    left=1
+    for f in "$DIR"/*; do
+        [ -f "$f" ] || continue
+        read -r p < "$f" 2>/dev/null
+        if [ -n "$p" ] && [ ! -d "/proc/$p" ]; then rm -f "$f"; else left=0; fi
+    done
+    return $left
+}
+
+case $1 in
+busy)
+    pid=$(claude_pid)
+    session "$pid"
+    [ -d "$DIR" ] || mkdir -p -m 700 "$DIR"
+    echo "$pid" > "$DIR/$id"
+    holding && exit 0
+    set -- "$0" hold
+    command -v gnome-session-inhibit > /dev/null && [ -n "$DBUS_SESSION_BUS_ADDRESS" ] &&
+        set -- gnome-session-inhibit --inhibit suspend --app-id claude-code --reason "Claude is working" "$@"
+    setsid -f systemd-inhibit --what=handle-lid-switch --mode=block \
+        --who="Claude Code" --why="Claude is working" "$@" < /dev/null > /dev/null 2>&1
+    ;;
+idle)
+    session "$(claude_pid)"
+    rm -f "$DIR/$id"
+    ;;
+hold)
+    echo $$ > "$HOLDER"
+    while :; do
+        while working; do sleep "$CHECK_SECONDS"; done
+        rm -f "$HOLDER"
+        working || exit 0
+        echo $$ > "$HOLDER"   # a session started just now
+    done
+    ;;
+status)
+    if working; then
+        echo "working:"
+        for f in "$DIR"/*; do echo "  ${f##*/}"; done
+    else
+        echo "idle"
+    fi
+    ;;
+*)
+    echo "usage: claude-busy busy|idle|status" >&2
+    exit 2
+    ;;
+esac

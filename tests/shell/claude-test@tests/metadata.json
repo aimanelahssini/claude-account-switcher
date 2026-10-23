@@ -1,0 +1,1 @@
+{"uuid": "claude-test@tests", "name": "Claude Account Switcher test driver", "description": "Drives the extension in a throwaway shell; see tests/shell/run.sh", "shell-version": ["50"]}

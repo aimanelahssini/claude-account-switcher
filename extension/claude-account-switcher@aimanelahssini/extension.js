@@ -8,11 +8,26 @@ import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {VERBS} from './verbs.js';
 
 const SLOTS = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'accounts']);
 const SCRIPT = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'claude-account']);
 const TRACK_WIDTH = 44;
 const POLL_SECONDS = 60;
+// claude-busy keeps one file per working Claude Code session here.
+const BUSY_DIR = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'claude-busy']);
+// Claude Code's spinner, as it looks in a terminal on Linux: the glyph runs forward then back,
+// and a three-letter glimmer sweeps over the word. One light timer drives both.
+const SPINNER = ['·', '✢', '*', '✶', '✻', '✽'];
+const SPINNER_FRAMES = [...SPINNER, ...[...SPINNER].reverse()];
+const SPINNER_MS = 120;
+const GLIMMER_PAUSE = 8;   // frames between two sweeps
+const ORANGE = '#d77757';
+const SHIMMER = '#eb9f7f';
+// Claude Code's mascot in its own terminal art, " ▐▛███▜▌ / ▝▜█████▛▘ /   ▘▘ ▝▝ ", as
+// [x, y, width, height] in quarter-character cells (twice as tall as wide on screen).
+const MASCOT = [[2, 0, 12, 4], [0, 2, 16, 1], [3, 4, 1, 1], [5, 4, 1, 1], [10, 4, 1, 1], [12, 4, 1, 1]];
+const MASCOT_EYES = [[4, 1], [11, 1]];
 // Terminals tried, in order, to run the browser sign-in.
 const TERMINALS = [
     ['xdg-terminal-exec'],
@@ -52,8 +67,22 @@ export default class ClaudeAccountExtension extends Extension {
     enable() {
         this._indicator = new PanelMenu.Button(0.0, 'Claude Account', true);
         this._box = new St.BoxLayout({style_class: 'claude-acct-box'});
-        this._box.add_child(new St.Label({text: 'Claude', style_class: 'claude-acct-tag',
-            y_align: Clutter.ActorAlign.CENTER}));
+        // Claude Code's mascot: grey, orange with its spinner next to it while Claude works.
+        this._tag = new St.BoxLayout({style_class: 'claude-acct-tag', reactive: true, track_hover: true,
+            y_align: Clutter.ActorAlign.CENTER});
+        this._mascot = new St.DrawingArea({style_class: 'claude-acct-mascot', y_align: Clutter.ActorAlign.CENTER});
+        this._mascot.connect('repaint', area => this._drawMascot(area));
+        this._tag.add_child(this._mascot);
+        this._spinner = new St.BoxLayout({style_class: 'claude-acct-spinner', visible: false,
+            y_align: Clutter.ActorAlign.CENTER});
+        // The glyphs come from different fonts; a fixed-width box keeps the word still.
+        this._glyph = new St.Label({style_class: 'claude-acct-spinner-glyph', y_align: Clutter.ActorAlign.CENTER});
+        this._verb = new St.Label({y_align: Clutter.ActorAlign.CENTER});
+        this._spinner.add_child(this._glyph);
+        this._spinner.add_child(this._verb);
+        this._tag.add_child(this._spinner);
+        this._tag.connect('notify::hover', () => this._showTooltip(this._tag));
+        this._box.add_child(this._tag);
         this._indicator.add_child(this._box);
         this._buttons = [];
         this._addBtn = new St.Button({label: '+', style_class: 'claude-acct-btn claude-acct-add',
@@ -70,6 +99,18 @@ export default class ClaudeAccountExtension extends Extension {
         this._refresh();
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
+        // Orange while Claude Code is working (see claude-busy), grey otherwise.
+        this._busy = null;
+        GLib.mkdir_with_parents(BUSY_DIR, 0o700);
+        this._busyMonitor = Gio.File.new_for_path(BUSY_DIR).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
+        this._busyMonitor.connect('changed', (m, f, o, event) => {
+            // Each tool call rewrites its session's file; only files coming and going matter.
+            if (event !== Gio.FileMonitorEvent.CHANGED && event !== Gio.FileMonitorEvent.CHANGES_DONE_HINT &&
+                event !== Gio.FileMonitorEvent.ATTRIBUTE_CHANGED)
+                this._syncBusy();
+        });
+        this._syncBusy();
+
         this._fetchUsage();
         this._timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, POLL_SECONDS, () => {
             this._fetchUsage();
@@ -81,6 +122,9 @@ export default class ClaudeAccountExtension extends Extension {
         if (this._timer)
             GLib.source_remove(this._timer);
         this._timer = null;
+        this._busyMonitor?.cancel();
+        this._busyMonitor = null;
+        this._spin(false);
         this._monitor?.cancel();
         this._monitor = null;
         this._indicator?.destroy();
@@ -90,6 +134,86 @@ export default class ClaudeAccountExtension extends Extension {
         this._buttons?.forEach(b => b._menu?.destroy());
         this._menuManager = null;
         this._buttons = [];
+    }
+
+    _syncBusy() {
+        let busy = false;
+        try {
+            const en = Gio.File.new_for_path(BUSY_DIR).enumerate_children('standard::name', 0, null);
+            let info;
+            while (!busy && (info = en.next_file(null)))
+                busy = !info.get_name().startsWith('.');
+            en.close(null);
+        } catch {}
+        if (busy === this._busy)
+            return;
+        this._busy = busy;
+        if (busy)
+            this._tag.add_style_class_name('busy');
+        else
+            this._tag.remove_style_class_name('busy');
+        this._mascot.queue_repaint();
+        this._spin(busy);
+        if (this._tag.hover)
+            this._showTooltip(this._tag);
+    }
+
+    _drawMascot(area) {
+        const cr = area.get_context();
+        const [w, h] = area.get_surface_size();
+        const sx = w / 16, sy = h / 5;
+        const c = area.get_theme_node().get_foreground_color();
+        cr.setSourceRGBA(c.red / 255, c.green / 255, c.blue / 255, c.alpha / 255);
+        for (const [x, y, cw, ch] of MASCOT)
+            cr.rectangle(x * sx, y * sy, cw * sx, ch * sy);
+        cr.fill();
+        cr.setOperator(0);  // CLEAR: the eyes are holes
+        for (const [x, y] of MASCOT_EYES)
+            cr.rectangle(x * sx, y * sy, sx, sy);
+        cr.fill();
+        cr.$dispose();
+    }
+
+    // Like Claude Code: a verb for this stretch of work, then glyph and glimmer every frame.
+    _spin(on) {
+        if (this._spinTimer)
+            GLib.source_remove(this._spinTimer);
+        this._spinTimer = null;
+        if (!this._spinner)
+            return;
+        this._spinner.visible = on;
+        if (!on)
+            return;
+        const verbs = this._verbs();
+        const word = `${verbs[Math.floor(Math.random() * verbs.length)]}…`;
+        const chars = [...word];
+        let frame = 0;
+        const draw = () => {
+            const glimmer = frame % (chars.length + GLIMMER_PAUSE) - 1;
+            const text = chars.map((ch, i) => Math.abs(i - glimmer) <= 1
+                ? `<span foreground="${SHIMMER}">${GLib.markup_escape_text(ch, -1)}</span>`
+                : GLib.markup_escape_text(ch, -1)).join('');
+            this._glyph.text = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+            this._verb.clutter_text.set_markup(text);
+            frame++;
+        };
+        draw();
+        this._spinTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SPINNER_MS, () => {
+            draw();
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    // Claude Code's own list, with the spinnerVerbs setting applied the same way.
+    _verbs() {
+        try {
+            const [, bytes] = GLib.file_get_contents(GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'settings.json']));
+            const custom = JSON.parse(new TextDecoder().decode(bytes)).spinnerVerbs;
+            const words = (custom?.verbs ?? []).filter(v => typeof v === 'string' && v);
+            if (words.length)
+                return custom.mode === 'replace' ? words : [...VERBS, ...words];
+        } catch {}
+        return VERBS;
     }
 
     _readFile(name) {
@@ -334,7 +458,10 @@ export default class ClaudeAccountExtension extends Extension {
             this._tooltip.hide();
             return;
         }
-        if (b === this._addBtn)
+        if (b === this._tag)
+            this._tooltip.text = this._busy ? 'Claude is working: no sleep until it\'s done, lid closed or not'
+                : 'Claude is idle';
+        else if (b === this._addBtn)
             this._tooltip.text = 'Add a Claude account';
         else
             this._tooltip.text = this._signedIn.has(b._slot)

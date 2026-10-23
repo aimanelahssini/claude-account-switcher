@@ -6,6 +6,39 @@ cd "$(dirname "$0")"
 UUID=claude-account-switcher@aimanelahssini
 
 install -Dm755 claude-account ~/.local/bin/claude-account
+install -Dm755 claude-busy ~/.local/bin/claude-busy
+# Claude Code hooks that tell claude-busy when a session works and when it's done. Replaces
+# earlier claude-busy hooks and leaves every other setting and hook as it is.
+python3 - <<'PY'
+import json, os
+path = os.path.expanduser('~/.claude/settings.json')
+try:
+    with open(path) as f:
+        settings = json.load(f)
+except FileNotFoundError:
+    settings = {}
+hooks = settings.setdefault('hooks', {})
+for event in list(hooks):
+    hooks[event] = [g for g in hooks[event] if not any('claude-busy' in h.get('command', '') for h in g.get('hooks', []))]
+    if not hooks[event]:
+        del hooks[event]
+def add(event, arg, matcher=None):
+    group = {'hooks': [{'type': 'command', 'command': f'~/.local/bin/claude-busy {arg}'}]}
+    if matcher:
+        group['matcher'] = matcher
+    hooks.setdefault(event, []).append(group)
+for event in ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SubagentStart']:
+    add(event, 'busy')
+for event in ['Stop', 'StopFailure', 'SessionEnd']:
+    add(event, 'idle')
+add('Notification', 'idle', 'idle_prompt')  # waiting for you (also after you stop it with Esc)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+tmp = path + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+os.replace(tmp, path)
+PY
 if command -v gnome-shell >/dev/null; then
     mkdir -p ~/.local/share/gnome-shell/extensions
     rm -rf ~/.local/share/gnome-shell/extensions/$UUID

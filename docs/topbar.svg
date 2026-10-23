@@ -3,7 +3,10 @@
   <rect x="20" y="20" width="720" height="64" rx="12" fill="#000"/>
   <rect x="44" y="46" width="34" height="12" rx="6" fill="#fff"/><circle cx="92" cy="52" r="5" fill="#9a9a9a"/><circle cx="108" cy="52" r="5" fill="#9a9a9a"/>
   <text x="210" y="61" fill="#fff" font-size="22" font-weight="bold">Oct 21  2:08 PM</text>
-  <text x="430" y="61" fill="#bdbdbd" font-size="24">Claude</text>
+  <!-- Claude Code's mascot, grey while Claude is idle -->
+  <g fill="#bdbdbd"><rect x="436" y="37" width="36" height="24"/><rect x="430" y="49" width="48" height="6"/>
+    <rect x="439" y="61" width="3" height="6"/><rect x="445" y="61" width="3" height="6"/><rect x="460" y="61" width="3" height="6"/><rect x="466" y="61" width="3" height="6"/></g>
+  <rect x="442" y="43" width="3" height="6" fill="#000"/><rect x="463" y="43" width="3" height="6" fill="#000"/>
   <!-- active account -->
   <rect x="520" y="27" width="96" height="50" rx="10" fill="#ffffff" fill-opacity="0.10"/>
   <text x="532" y="57" fill="#d97757" font-size="24" font-weight="bold">−</text>
