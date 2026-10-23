@@ -95,6 +95,27 @@ async function run() {
     await shot('busy-tooltip', ext, true);
     tag.hover = false;
 
+    // On long work the word changes now and then (every 3 minutes; 1 second here), never to
+    // the same word.
+    GLib.unlink(`${BUSY}/0a1b2c3d-test`);
+    await sleep(400);
+    const settings = `${GLib.get_home_dir()}/.claude/settings.json`;
+    const savedSettings = new TextDecoder().decode(GLib.file_get_contents(settings)[1]);
+    GLib.file_set_contents(settings, JSON.stringify({spinnerVerbs: {mode: 'replace', verbs: ['Choreographing', 'Composing']}}));
+    ext._wordSeconds = 1;
+    GLib.file_set_contents(`${BUSY}/0a1b2c3d-test`, '1\n');
+    await sleep(300);
+    const words = [ext._verb.text];
+    for (let i = 0; i < 60; i++) {
+        const before = ext._verb.text;
+        await sleep(120);
+        if (ext._verb.text !== before)
+            words.push(ext._verb.text);
+    }
+    check('word: changes on long work', words.length >= 3 && words.every((w, i) => i === 0 || w !== words[i - 1]), words.join(' > '));
+    delete ext._wordSeconds;
+    GLib.file_set_contents(settings, savedSettings);
+
     // A heartbeat rewrites the file; that alone mustn't rescan or restart anything.
     const timer = ext._spinTimer;
     GLib.file_set_contents(`${BUSY}/0a1b2c3d-test`, '1\n');

@@ -22,6 +22,7 @@ const SPINNER = ['·', '✢', '*', '✶', '✻', '✽'];
 const SPINNER_FRAMES = [...SPINNER, ...[...SPINNER].reverse()];
 const SPINNER_MS = 120;
 const GLIMMER_PAUSE = 8;   // frames between two sweeps
+const WORD_SECONDS = 180;  // on long work a new word now and then, between two sweeps
 const ORANGE = '#d77757';
 const SHIMMER = '#eb9f7f';
 // Claude Code's mascot in its own terminal art, " ▐▛███▜▌ / ▝▜█████▛▘ /   ▘▘ ▝▝ ", as
@@ -277,11 +278,22 @@ export default class ClaudeAccountExtension extends Extension {
         if (!on)
             return;
         const verbs = this._verbs();
-        const word = `${verbs[Math.floor(Math.random() * verbs.length)]}…`;
-        const chars = [...word];
-        let frame = 0;
+        let word = null, chars, since, sweep = 0, frame = 0;
+        const pick = () => {
+            const others = verbs.length > 1 ? verbs.filter(v => `${v}…` !== word) : verbs;
+            word = `${others[Math.floor(Math.random() * others.length)]}…`;
+            chars = [...word];
+            since = GLib.get_monotonic_time();
+            sweep = 0;
+        };
+        pick();
         const draw = () => {
-            const glimmer = frame % (chars.length + GLIMMER_PAUSE) - 1;
+            if (sweep >= chars.length + GLIMMER_PAUSE) {
+                sweep = 0;
+                if (GLib.get_monotonic_time() - since >= (this._wordSeconds ?? WORD_SECONDS) * 1e6)  // tests shorten it
+                    pick();
+            }
+            const glimmer = sweep++ - 1;
             const text = chars.map((ch, i) => Math.abs(i - glimmer) <= 1
                 ? `<span foreground="${SHIMMER}">${GLib.markup_escape_text(ch, -1)}</span>`
                 : GLib.markup_escape_text(ch, -1)).join('');
