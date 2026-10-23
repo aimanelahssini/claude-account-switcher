@@ -18,8 +18,9 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
   with its full history. No `/login`, no restart.
 - **Live usage.** Each account shows its 5-hour usage in percent, refreshed every minute.
   The selected account has an orange bar, the other a grey one.
-- **Tokens too.** Hover an account for when its limit resets and how many tokens this 5-hour
-  window has used so far; the history panel shows tokens per window and per hour.
+- **Reset time.** Hover an account to see when its limit resets.
+- **% or tokens.** The history panel switches between both with one click: the 5-hour
+  window, each hour of the last 24 and each recent window, in percent of the limit or in tokens.
 - **Automatic switch at 100%.** When the account you're on reaches its 5-hour limit, it
   switches to the signed-in account with the most room left and tells you in a notification.
 - **Usage history.** Click the account you're on (or right-click any account) for how much
@@ -34,7 +35,7 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
   Claude is done, then does what closing the lid normally does.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
-<p align="center"><img src="docs/history.png" width="446" alt="History panel under the active account: current usage and reset time, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak usage and tokens"></p>
+<p align="center"><img src="docs/history.png" width="380" alt="History panel in percent: 53% of the 5-hour limit, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak"> <img src="docs/history-tokens.png" width="380" alt="The same panel switched to tokens: 2.3M tokens in this 5-hour window, hourly bars in tokens, and tokens per window"></p>
 
 ## Options
 
@@ -99,7 +100,8 @@ window running: the next one starts with your next message, so the last window l
 have ended a while ago. The panel marks the window that's running as **Now**, and
 an account whose window has ended shows 0% and *Limit reset at …*.
 
-Anthropic only reports the percentage. Tokens are counted from Claude Code's own
+Anthropic only reports the percentage; switch the history panel to **Tokens** to see those
+instead (it remembers your choice). Tokens are counted from Claude Code's own
 transcripts on this computer (`~/.claude/projects`): input, output and cache writes, without
 cache reads, which are cheap and would dwarf everything else. Each message counts toward the
 account that was active when it was sent. Claude Code on other computers isn't included, and

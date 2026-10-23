@@ -509,15 +509,39 @@ export default class ClaudeAccountExtension extends Extension {
         const head = new St.BoxLayout({style_class: 'claude-acct-history-head'});
         head.add_child(new St.Label({text: label(n), style_class: `claude-acct-history-name${active ? ' active' : ''}`}));
         head.add_child(new St.Label({text: [account.emailAddress, account.organizationName].filter(Boolean).join(' · ') ||
-            'Claude account', style_class: 'claude-acct-history-who', y_align: Clutter.ActorAlign.CENTER}));
+            'Claude account', style_class: 'claude-acct-history-who', y_align: Clutter.ActorAlign.CENTER,
+            x_expand: true}));
+        // % or tokens for everything below; the choice is remembered.
+        const inTokens = this._unit() === 'tokens';
+        const unit = new St.BoxLayout({style_class: 'claude-acct-unit', y_align: Clutter.ActorAlign.CENTER});
+        for (const [key, text] of [['pct', '%'], ['tokens', 'Tokens']]) {
+            const btn = new St.Button({label: text, style_class: 'claude-acct-unit-btn', can_focus: true,
+                checked: (key === 'tokens') === inTokens});
+            btn.connect('clicked', () => {
+                if ((key === 'tokens') === inTokens)
+                    return;
+                this._setUnit(key);
+                // Rebuild once this click is over; the button goes with it.
+                GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                    if (b._menu?.isOpen)
+                        this._fillHistory(b);
+                    return GLib.SOURCE_REMOVE;
+                });
+            });
+            unit.add_child(btn);
+        }
+        head.add_child(unit);
         box.add_child(head);
         const tokens = readTokens();
         const win = this._window(n);
         const pct = this._pct(n);
-        const used = typeof pct === 'number' ? `${Math.round(pct)}% of the 5-hour limit` : 'Usage unknown';
         const winTokens = win && !win.ended ? tokensBetween(tokens, n, win.end - 5 * HOUR, win.end) : 0;
-        box.add_child(new St.Label({text: winTokens ? `${used} · ${short(winTokens)} tokens` : used,
-            style_class: 'claude-acct-history-now'}));
+        let current;
+        if (inTokens)
+            current = winTokens ? `${short(winTokens)} tokens in this 5-hour window` : 'No tokens in this 5-hour window yet';
+        else
+            current = typeof pct === 'number' ? `${Math.round(pct)}% of the 5-hour limit` : 'Usage unknown';
+        box.add_child(new St.Label({text: current, style_class: 'claude-acct-history-now'}));
         box.add_child(new St.Label({text: this._resetText(n), style_class: 'claude-acct-history-reset'}));
 
         // Chart: what each of the last 24 hours used, hover a bar for its numbers
@@ -532,12 +556,14 @@ export default class ClaudeAccountExtension extends Extension {
         const total = Math.round(hours.reduce((a, b) => a + b, 0));
         const totalTokens = hourTokens.reduce((a, b) => a + b, 0);
         const summary = () => {
-            detail.text = !total && !totalTokens ? 'Nothing used in the last 24 hours'
-                : `${total}% of the limit${totalTokens ? `, ${short(totalTokens)} tokens` : ''} in the last 24 hours`;
+            if (inTokens)
+                detail.text = totalTokens ? `${short(totalTokens)} tokens in the last 24 hours` : 'No tokens in the last 24 hours';
+            else
+                detail.text = total ? `${total}% of the limit used in the last 24 hours` : 'Nothing used in the last 24 hours';
         };
         summary();
         chart._hovered = -1;
-        chart.connect('repaint', area => this._drawChart(area, hours));
+        chart.connect('repaint', area => inTokens ? this._drawChart(area, hourTokens, 1) : this._drawChart(area, hours, 20));
         chart.connect('motion-event', (area, event) => {
             const [x] = area.transform_stage_point(...event.get_coords()).slice(1);
             const i = Math.max(0, Math.min(23, Math.floor(x / area.width * 24)));
@@ -545,7 +571,7 @@ export default class ClaudeAccountExtension extends Extension {
                 area._hovered = i;
                 const from = GLib.DateTime.new_from_unix_local(firstHour + i * HOUR);
                 detail.text = `${from.format('%H:00')}–${from.add_hours(1).format('%H:00')}  ·  ` +
-                    `${Math.round(hours[i])}% used${hourTokens[i] ? `  ·  ${short(hourTokens[i])} tokens` : ''}`;
+                    (inTokens ? `${short(hourTokens[i])} tokens` : `${Math.round(hours[i])}% used`);
                 area.queue_repaint();
             }
             return Clutter.EVENT_PROPAGATE;
@@ -572,6 +598,7 @@ export default class ClaudeAccountExtension extends Extension {
             return {end, start: end.add_hours(-5), peak: w.peak, now: w.end - 5 * HOUR <= now && now < w.end,
                 tokens: tokensBetween(tokens, n, w.end - 5 * HOUR, w.end)};
         });
+        const mostTokens = Math.max(1, ...windows.map(w => w.tokens));
         if (!windows.length)
             box.add_child(new St.Label({text: 'Nothing recorded yet. Usage is saved every minute from now on.',
                 style_class: 'claude-acct-history-empty'}));
@@ -581,30 +608,31 @@ export default class ClaudeAccountExtension extends Extension {
                 style_class: 'claude-acct-window-when', x_expand: true, y_align: Clutter.ActorAlign.CENTER}));
             const track = new St.Widget({style_class: 'claude-acct-window-track', y_align: Clutter.ActorAlign.CENTER});
             const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            // Tokens: bars against the window that used the most.
+            const share = inTokens ? w.tokens / mostTokens : Math.min(w.peak, 100) / 100;
             track.add_child(new St.Widget({style_class: `claude-acct-window-fill${active ? ' active' : ''}`,
-                width: Math.round(90 * scale * Math.min(w.peak, 100) / 100)}));
+                width: Math.round(90 * scale * share)}));
             row.add_child(track);
-            row.add_child(new St.Label({text: `${Math.round(w.peak)}%`, style_class: 'claude-acct-window-pct',
-                y_align: Clutter.ActorAlign.CENTER}));
-            row.add_child(new St.Label({text: w.tokens ? short(w.tokens) : '', style_class: 'claude-acct-window-tokens',
-                y_align: Clutter.ActorAlign.CENTER}));
+            row.add_child(new St.Label({text: inTokens ? (w.tokens ? short(w.tokens) : '–') : `${Math.round(w.peak)}%`,
+                style_class: 'claude-acct-window-pct', y_align: Clutter.ActorAlign.CENTER}));
             box.add_child(row);
         }
 
         const since = hist.length ? GLib.DateTime.new_from_unix_local(hist[0].t) : null;
         box.add_child(new St.Label({text: since ? `Recorded since ${dayName(since).replace(/^(Today|Yesterday)$/, d => d.toLowerCase())} ${since.format('%H:%M')}` +
             ' · claude-account history' : 'claude-account history', style_class: 'claude-acct-history-foot'}));
-        box.add_child(new St.Label({text: 'Tokens: input, output and cache writes, from Claude Code on this computer',
-            style_class: 'claude-acct-history-foot'}));
+        if (inTokens)
+            box.add_child(new St.Label({text: 'Input, output and cache writes, from Claude Code on this computer',
+                style_class: 'claude-acct-history-foot'}));
     }
 
-    // 24 orange bars, one per hour, scaled to the busiest hour (at least 20%).
-    _drawChart(area, hours) {
+    // 24 orange bars, one per hour, scaled to the busiest hour (at least `floor`).
+    _drawChart(area, hours, floor) {
         const cr = area.get_context();
         const [w, h] = area.get_surface_size();
         const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
         const pad = 4 * scale;
-        const top = Math.max(20, ...hours);
+        const top = Math.max(floor, ...hours);
         const slot = (w - 2 * pad) / 24;
         const gap = Math.max(1, Math.round(slot * 0.25));
         cr.setSourceRGBA(1, 1, 1, 0.08);
@@ -660,10 +688,13 @@ export default class ClaudeAccountExtension extends Extension {
         return `Resets in ${left} (at ${reset.to_local().format('%H:%M')})`;
     }
 
-    _accountTip(slot) {
-        const win = this._window(slot);
-        const n = win && !win.ended ? tokensBetween(readTokens(), slot, win.end - 5 * HOUR, win.end) : 0;
-        return n ? `${this._resetText(slot)} · ${short(n)} tokens so far` : this._resetText(slot);
+    // The history panel's % or tokens, kept in a dotfile next to the accounts.
+    _unit() {
+        return this._readFile('.panel-unit').trim() === 'tokens' ? 'tokens' : 'pct';
+    }
+
+    _setUnit(unit) {
+        GLib.file_set_contents(GLib.build_filenamev([SLOTS, '.panel-unit']), `${unit}\n`);
     }
 
     _showTooltip(b) {
@@ -678,7 +709,7 @@ export default class ClaudeAccountExtension extends Extension {
             this._tooltip.text = 'Add a Claude account';
         else
             this._tooltip.text = this._signedIn.has(b._slot)
-                ? this._accountTip(b._slot) : 'Not signed in. Click to sign in.';
+                ? this._resetText(b._slot) : 'Not signed in. Click to sign in.';
         this._tooltip.show();
         const [x, y] = b.get_transformed_position();
         const [w, h] = b.get_transformed_size();

@@ -162,13 +162,14 @@ async function run() {
     ext._toggleHistory(b1);
     await sleep(700);
     const all = a => [a, ...a.get_children().flatMap(all)];
-    const rows = all(b1._menu.box).filter(c => c.has_style_class_name?.('claude-acct-window'));
-    check('history: three windows', rows.length === 3, rows.map(r => r.get_children().map(c => c.text).filter(Boolean).join(' ')).join(' | '));
+    const find = cls => all(b1._menu.box).filter(c => c.has_style_class_name?.(cls));
+    const rowTexts = () => find('claude-acct-window').map(r => r.get_children().map(c => c.text).filter(Boolean).join(' '));
+    let rows = find('claude-acct-window');
+    check('history: three windows', rows.length === 3, rowTexts().join(' | '));
     check('history: current window says Now', rows[0].get_children()[0].text.startsWith('Now') && !rows[1].get_children()[0].text.startsWith('Now'));
-    check('history: tokens per window', rows.every(r => /^\d/.test(r.get_children().at(-1).text)));
-    const chart = all(b1._menu.box).find(c => c.has_style_class_name?.('claude-acct-chart'));
-    const detail = all(b1._menu.box).find(c => c.has_style_class_name?.('claude-acct-chart-detail'));
-    check('history: chart', !!chart && /tokens in the last 24 hours$/.test(detail?.text), detail?.text);
+    check('history: % by default', rows.every(r => /^\d+%$/.test(r.get_children().at(-1).text)));
+    let chart = find('claude-acct-chart')[0], detail = find('claude-acct-chart-detail')[0];
+    check('history: chart in %', !!chart && /% of the limit used in the last 24 hours$/.test(detail?.text), detail?.text);
     await shot('history', ext, false, b1._menu.actor);
     // Hover a bar: the line under the chart shows that hour.
     const [cx, cy] = chart.get_transformed_position();
@@ -176,14 +177,38 @@ async function run() {
         .create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
     ev.notify_absolute_motion(GLib.get_monotonic_time(), cx + chart.width * 0.9, cy + chart.height / 2);
     await sleep(400);
-    check('history: hover shows an hour', /^\d\d:00–\d\d:00/.test(detail.text), detail.text);
+    check('history: hover shows an hour', /^\d\d:00–\d\d:00  ·  \d+% used$/.test(detail.text), detail.text);
+    ev.notify_absolute_motion(GLib.get_monotonic_time(), 5, 600);
+    await sleep(300);
+
+    // Switch to tokens: everything below the header follows, and the choice is remembered.
+    const tokBtn = find('claude-acct-unit-btn').find(btn => btn.label === 'Tokens');
+    tokBtn.emit('clicked', 1);
+    await sleep(600);
+    check('tokens: menu still open', b1._menu.isOpen);
+    check('tokens: remembered', new TextDecoder().decode(GLib.file_get_contents(`${accounts}/.panel-unit`)[1]).trim() === 'tokens');
+    rows = find('claude-acct-window');
+    check('tokens: per window', rows.length === 3 && rows.every(r => /^[\d.]+[kM]$/.test(r.get_children().at(-1).text)), rowTexts().join(' | '));
+    check('tokens: switch shows it', find('claude-acct-unit-btn').find(btn => btn.label === 'Tokens').checked);
+    detail = find('claude-acct-chart-detail')[0];
+    check('tokens: chart', /^[\d.]+[kM] tokens in the last 24 hours$/.test(detail.text), detail.text);
+    check('tokens: header', /tokens in this 5-hour window$/.test(find('claude-acct-history-now')[0].text), find('claude-acct-history-now')[0].text);
+    await shot('history-tokens', ext, false, b1._menu.actor);
+    b1._menu.close();
+    await sleep(400);
+    ext._toggleHistory(b1);
+    await sleep(600);
+    check('tokens: still tokens next time', find('claude-acct-unit-btn').find(btn => btn.label === 'Tokens').checked);
+    find('claude-acct-unit-btn').find(btn => btn.label === '%').emit('clicked', 1);
+    await sleep(500);
+    check('tokens: back to %', /^\d+%$/.test(find('claude-acct-window')[0].get_children().at(-1).text));
     b1._menu.close();
     await sleep(400);
 
-    // Tooltip: reset time and this window's tokens.
+    // Tooltip: only the reset time.
     b1.hover = true;
     await sleep(300);
-    check('tooltip: tokens', /Resets in .* · [\d.]+[kM] tokens so far$/.test(ext._tooltip.text), ext._tooltip.text);
+    check('tooltip: reset time only', /^Resets in [\d h]+min \(at \d\d:\d\d\)$/.test(ext._tooltip.text), ext._tooltip.text);
     b1.hover = false;
 
     // A window that has ended: 0%, and says so, before the next reading comes in.
