@@ -9,6 +9,8 @@
 # still closed suspends the computer as usual. The top-bar extension turns orange meanwhile.
 DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-busy"
 HOLDER="$DIR/.holder"
+# `claude-account keep-awake off` (or the top bar's right-click menu) creates this file.
+OFF="$HOME/.claude/accounts/keep-awake-off"
 STALE_MINUTES=20   # no hook for this long (e.g. you stopped Claude with Esc) counts as done
 CHECK_SECONDS=5
 
@@ -54,7 +56,7 @@ busy)
     session "$pid"
     [ -d "$DIR" ] || mkdir -p -m 700 "$DIR"
     echo "$pid" > "$DIR/$id"
-    holding && exit 0
+    holding || [ -e "$OFF" ] && exit 0
     set -- "$0" hold
     command -v gnome-session-inhibit > /dev/null && [ -n "$DBUS_SESSION_BUS_ADDRESS" ] &&
         set -- gnome-session-inhibit --inhibit suspend --app-id claude-code --reason "Claude is working" "$@"
@@ -68,7 +70,8 @@ idle)
 hold)
     echo $$ > "$HOLDER"
     while :; do
-        while working; do sleep "$CHECK_SECONDS"; done
+        while working && [ ! -e "$OFF" ]; do sleep "$CHECK_SECONDS"; done
+        [ -e "$OFF" ] && { rm -f "$HOLDER"; exit 0; }
         rm -f "$HOLDER"
         working || exit 0
         echo $$ > "$HOLDER"   # a session started just now

@@ -16,6 +16,10 @@ uses the new login on its next request, so the current chat just continues.
   claude-account remove N         forget account N's login
   claude-account usage            fetch 5-hour usage % for every account into accounts/usage.cache
   claude-account history [N]      recent 5-hour windows and how high each went
+  claude-account auto-switch on|off   at 100% of the 5-hour limit, switch to the account
+                                  with the most room left (on by default)
+  claude-account keep-awake on|off    keep the computer awake while Claude works, lid closed
+                                  too (claude-busy; on by default)
 """
 import datetime, fcntl, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 
@@ -33,6 +37,10 @@ HISTORY = os.path.join(SLOTS, "history.jsonl")
 HISTORY_DAYS = 30
 HISTORY_EVERY = 600  # record an unchanged reading at most every 10 minutes
 LOCK = os.path.join(SLOTS, ".lock")
+# Options are on unless these files exist (the top bar's right-click menu toggles them).
+OPTION_OFF = {"auto-switch": os.path.join(SLOTS, "auto-switch-off"),
+              "keep-awake": os.path.join(SLOTS, "keep-awake-off")}
+WINDOW_JITTER = 600  # the API's reset time wobbles by a second or so between readings
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -161,6 +169,18 @@ def append_history(entries):
         os.replace(tmp, HISTORY)
 
 
+def reset_time(reset):
+    try:
+        return datetime.datetime.fromisoformat(reset.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def same_window(a, b):
+    ta, tb = reset_time(a), reset_time(b)
+    return ta is not None and tb is not None and abs(ta - tb) < WINDOW_JITTER
+
+
 def record_readings(out):
     """Add fresh readings to the history: on any change, else every HISTORY_EVERY seconds."""
     last = {}
@@ -173,7 +193,7 @@ def record_readings(out):
         if n.startswith("_") or u.get("stale") or not isinstance(u.get("pct"), (int, float)):
             continue
         prev = last.get(n)
-        if prev and prev.get("pct") == u["pct"] and prev.get("reset") == u.get("resets_at") \
+        if prev and prev.get("pct") == u["pct"] and same_window(prev.get("reset"), u.get("resets_at")) \
                 and now - prev["t"] < HISTORY_EVERY:
             continue
         new.append({"t": now, "a": n, "pct": u["pct"], "reset": u.get("resets_at")})
@@ -182,17 +202,18 @@ def record_readings(out):
 
 def windows(name, days=7):
     """5-hour windows of one account, newest first: (start, end, peak %)."""
-    peaks = {}
     cutoff = time.time() - days * 86400
-    for e in read_history():
-        if e.get("a") != name or not e.get("reset") or e["t"] < cutoff:
-            continue
-        peaks[e["reset"]] = max(peaks.get(e["reset"], 0), e["pct"])
-    out = []
-    for reset, peak in peaks.items():
-        end = datetime.datetime.fromisoformat(reset.replace("Z", "+00:00")).timestamp()
-        out.append((end - 5 * 3600, end, peak))
-    return sorted(out, reverse=True)
+    ends = sorted((reset_time(e.get("reset")), e["pct"]) for e in read_history()
+                  if e.get("a") == name and e["t"] >= cutoff and reset_time(e.get("reset")))
+    # Readings of one window are a second or so apart in reset time; windows are hours apart.
+    groups = []
+    for end, pct in ends:
+        if groups and end - groups[-1][0] < WINDOW_JITTER:
+            groups[-1][1] = max(groups[-1][1], pct)
+        else:
+            groups.append([end, pct])
+    rounded = ((round(end / 60) * 60, peak) for end, peak in groups)
+    return sorted(((end - 5 * 3600, end, peak) for end, peak in rounded), reverse=True)
 
 
 def history(name=None):
@@ -246,6 +267,44 @@ def usage():
     os.replace(USAGE_CACHE + ".tmp", USAGE_CACHE)
     for n in slots():
         print(n, out[n].get("pct"), out[n].get("error", ""))
+    if option("auto-switch"):
+        auto_switch(cur, out)
+
+
+def option(name):
+    return not os.path.exists(OPTION_OFF[name])
+
+
+def set_option(name, on):
+    if on:
+        try:
+            os.remove(OPTION_OFF[name])
+        except FileNotFoundError:
+            pass
+    else:
+        open(OPTION_OFF[name], "w").close()
+
+
+def auto_switch(cur, out):
+    """The active account is at its 5-hour limit: move to the signed-in one with the most room."""
+    now = time.time()
+    u = out.get(cur) or {}
+    if not isinstance(u.get("pct"), (int, float)) or u["pct"] < 100:
+        return
+    # A kept (stale) reading still counts while its window lasts.
+    if u.get("stale") and (reset_time(u.get("resets_at")) or 0) < now:
+        return
+    room = [(out[n]["pct"], i, n) for i, n in enumerate(slots())
+            if n != cur and isinstance(out.get(n, {}).get("pct"), (int, float))
+            and not out[n].get("stale") and out[n]["pct"] < 100]
+    if not room:
+        return
+    target = min(room)[2]
+    with locked():
+        if current() != cur:
+            return
+        switch(target, auto=True)
+    print(f"auto-switched {cur} -> {target}")
 
 
 def wait_for_refresh_lock():
@@ -255,7 +314,7 @@ def wait_for_refresh_lock():
         time.sleep(0.2)
 
 
-def switch(n):
+def switch(n, auto=False):
     if not os.path.exists(slot_path(n)):
         sys.exit(f"account {n} is not signed in; run: claude-account add {n}")
     cur = current()
@@ -271,7 +330,7 @@ def switch(n):
         cfg["oauthAccount"] = target["oauthAccount"]
         write_json(CONFIG, cfg, mode=os.stat(CONFIG).st_mode & 0o777)
     set_active(n)
-    append_history([{"t": int(time.time()), "switch": n}])
+    append_history([dict({"t": int(time.time()), "switch": n}, **({"auto": cur} if auto else {}))])
 
 
 # Private-window flags for browsers, keyed by a word in their .desktop id.
@@ -417,6 +476,12 @@ def main():
             switch(a[1])
     elif a[0] == "usage":
         usage()
+    elif a[0] in OPTION_OFF and len(a) <= 2:
+        if len(a) == 2:
+            if a[1] not in ("on", "off"):
+                sys.exit(__doc__)
+            set_option(a[0], a[1] == "on")
+        print("on" if option(a[0]) else "off")
     elif a[0] == "history" and len(a) <= 2:
         history(a[1] if len(a) == 2 else None)
     elif a[0] == "add" and len(a) >= 2:

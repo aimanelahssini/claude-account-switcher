@@ -19,8 +19,11 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 - **Live usage.** Each account shows its 5-hour usage in percent, refreshed every minute.
   The selected account has an orange bar, the other a grey one.
 - **Reset time.** Hover an account to see when its limit resets.
-- **Usage history.** Click the account you're on (or right-click any account) for a
-  chart of its last 24 hours and its recent 5-hour windows with how high each one went.
+- **Automatic switch at 100%.** When the account you're on reaches its 5-hour limit, it
+  switches to the signed-in account with the most room left and tells you in a notification.
+- **Usage history.** Click the account you're on (or right-click any account) for how much
+  each of the last 24 hours used (hover a bar for its numbers) and its recent 5-hour windows
+  with how high each one went.
 - **Add accounts from the top bar.** Click **+**, type a name (anything short: `2`, `work`,
   `-`), and sign in in a **private window**, so your browser can't quietly reuse the Claude
   account it's already logged in to. Once you're in, that account becomes active.
@@ -30,7 +33,20 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
   Claude is done, then does what closing the lid normally does.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
-<p align="center"><img src="docs/history.png" width="450" alt="History panel under the active account: current usage and reset time, a chart of the last 24 hours, and recent 5-hour windows with their peak usage"></p>
+<p align="center"><img src="docs/history.png" width="427" alt="History panel under the active account: current usage and reset time, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak usage"></p>
+
+## Options
+
+Click the mascot (or right-click it) to turn either feature off or back on. Both are on by default.
+
+<p align="center"><img src="docs/options.png" width="344" alt="Menu under the mascot: Claude is idle, with switches for Stay awake while Claude works and Switch accounts at 100%"></p>
+
+- **Stay awake while Claude works:** see [While Claude works](#while-claude-works).
+- **Switch accounts at 100%:** checked with every usage update (once a minute). It only moves
+  to an account that is signed in and under its limit; if they're all full, it stays. The
+  chat you're in continues on the new account with your next message.
+
+From the terminal: `claude-account keep-awake on|off` and `claude-account auto-switch on|off`.
 
 ## While Claude works
 
@@ -110,6 +126,9 @@ From the terminal, `claude-account add NAME --private` does the same with the na
 | `claude-account list` | List saved accounts |
 | `claude-account usage` | Fetch 5-hour usage for every account |
 | `claude-account history [NAME]` | Recent 5-hour windows and how high each went |
+| `claude-account auto-switch on\|off` | Switch accounts automatically at 100% (on by default) |
+| `claude-account keep-awake on\|off` | Keep the computer awake while Claude works (on by default) |
+| `claude-busy status` | Which Claude Code sessions are working right now |
 | `claude-account add NAME --private` | Sign in to an account in a private browser window |
 | `claude-account add NAME --current` | Save the login Claude Code is using right now |
 | `claude-account rename OLD NEW` | Rename an account |

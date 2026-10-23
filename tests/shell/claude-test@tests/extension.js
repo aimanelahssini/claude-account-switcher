@@ -1,6 +1,7 @@
 // Test driver for the top-bar extension in a throwaway headless shell (tests/shell/run.sh).
 // Marks a made-up Claude session as working the way claude-busy does, checks the mascot turns
 // orange with Claude Code's spinner next to it, and saves screenshots of the top bar to $TEST_OUT.
+import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Shell from 'gi://Shell';
@@ -23,9 +24,16 @@ const sleep = ms => new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms,
 }));
 
 // The extension's part of the top bar, with some room for the tooltip under it.
-async function shot(name, ext, withTooltip = false) {
+async function shot(name, ext, withTooltip = false, menu = null) {
     let [x, y] = ext._indicator.get_transformed_position();
     let [w, h] = ext._indicator.get_transformed_size();
+    if (menu) {
+        const [mx, my] = menu.get_transformed_position();
+        const [mw, mh] = menu.get_transformed_size();
+        x = Math.min(x, mx);
+        w = Math.max(x + w, mx + mw) - x;
+        h = my + mh - y;
+    }
     let x2 = x + w + 12;
     x -= 12;
     if (withTooltip) {
@@ -109,6 +117,63 @@ async function run() {
     GLib.unlink(`${BUSY}/second`);
     await sleep(600);
     check('re-enable: grey again', ext._busy === false);
+
+    // Options menu on the mascot: the switches write the same files as the CLI.
+    const accounts = `${GLib.get_home_dir()}/.claude/accounts`;
+    ext._tag.emit('clicked', 3);
+    await sleep(1200);
+    const items = ext._options._getMenuItems();
+    const switches = items.filter(i => i._switch);
+    check('options: menu open', ext._options.isOpen && switches.length === 2,
+        items.map(i => i.label?.text).filter(Boolean).join(' | '));
+    check('options: both on by default', switches.every(i => i.state));
+    await shot('options', ext, false, ext._options.actor);
+    switches[0].toggle();
+    check('options: keep-awake off file', GLib.file_test(`${accounts}/keep-awake-off`, GLib.FileTest.EXISTS));
+    switches[0].toggle();
+    check('options: keep-awake on again', !GLib.file_test(`${accounts}/keep-awake-off`, GLib.FileTest.EXISTS));
+    switches[1].toggle();
+    check('options: auto-switch off file', GLib.file_test(`${accounts}/auto-switch-off`, GLib.FileTest.EXISTS));
+    switches[1].toggle();
+    ext._options.close();
+    await sleep(400);
+
+    // An automatic switch (as claude-account usage records it) gets a notification.
+    const tray = Main.messageTray;
+    const before = tray.getSources().length;
+    GLib.file_set_contents(`${accounts}/active`, '2\n');
+    const hist = new TextDecoder().decode(GLib.file_get_contents(`${accounts}/history.jsonl`)[1]);
+    GLib.file_set_contents(`${accounts}/history.jsonl`,
+        `${hist}{"t":${Math.floor(Date.now() / 1000)},"switch":"2","auto":"1"}\n`);
+    ext._notifyAutoSwitch('1');
+    await sleep(400);
+    const note = tray.getSources().flatMap(src => src.notifications).find(n => n.title?.startsWith('Switched'));
+    check('auto-switch: notification', !!note, `${note?.title} / ${note?.body}`);
+    ext._notifyAutoSwitch('2');
+    check('auto-switch: none for a manual switch', tray.getSources().flatMap(src => src.notifications)
+        .filter(n => n.title?.startsWith('Switched')).length === 1);
+    GLib.file_set_contents(`${accounts}/active`, '1\n');
+    await sleep(400);
+
+    // History panel: hourly bars, and one row per 5-hour window despite the wobbling resets.
+    const b1 = ext._buttons.find(b => b._slot === '1');
+    ext._toggleHistory(b1);
+    await sleep(700);
+    const all = a => [a, ...a.get_children().flatMap(all)];
+    const rows = all(b1._menu.box).filter(c => c.has_style_class_name?.('claude-acct-window'));
+    check('history: three windows', rows.length === 3, rows.map(r => r.get_children()[0].text).join(' | '));
+    const chart = all(b1._menu.box).find(c => c.has_style_class_name?.('claude-acct-chart'));
+    const detail = all(b1._menu.box).find(c => c.has_style_class_name?.('claude-acct-chart-detail'));
+    check('history: chart', !!chart, detail?.text);
+    await shot('history', ext, false, b1._menu.actor);
+    // Hover a bar: the line under the chart shows that hour.
+    const [cx, cy] = chart.get_transformed_position();
+    const ev = Clutter.get_default_backend().get_default_seat()
+        .create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+    ev.notify_absolute_motion(GLib.get_monotonic_time(), cx + chart.width * 0.9, cy + chart.height / 2);
+    await sleep(400);
+    check('history: hover shows an hour', /^\d\d:00–\d\d:00/.test(detail.text), detail.text);
+    b1._menu.close();
     out('DONE');
 }
 
