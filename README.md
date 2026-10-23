@@ -172,15 +172,13 @@ and the token endpoint to renew an account that hasn't been used for a while.
 
 ## Uninstall
 
-Remove the `claude-busy` hooks from `~/.claude/settings.json` first (every hook whose
-command mentions `claude-busy`), then:
-
 ```bash
-gnome-extensions disable claude-account-switcher@aimanelahssini
-rm -rf ~/.local/share/gnome-shell/extensions/claude-account-switcher@aimanelahssini
-rm ~/.local/bin/claude-account ~/.local/bin/claude-busy
-rm -rf ~/.claude/accounts   # deletes the saved logins
+./uninstall.sh
 ```
+
+It removes the extension, `claude-account`, `claude-busy` and their Claude Code hooks, and
+leaves every other setting alone. Your saved logins stay in `~/.claude/accounts`; delete
+that folder too to forget them.
 
 ## License
 
