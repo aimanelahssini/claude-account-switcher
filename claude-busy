@@ -5,14 +5,16 @@
 #   claude-busy idle    a session is done, or waiting for you
 # Each working session is a file in $XDG_RUNTIME_DIR/claude-busy holding its claude process id.
 # While any exist, a background `claude-busy hold` keeps two inhibitors: logind ignores the lid,
-# and GNOME doesn't suspend when idle. When the last session is done they go, and a lid that is
-# still closed suspends the computer as usual. The top-bar extension turns orange meanwhile.
+# and GNOME doesn't suspend when idle. When the last session is done it waits a minute; if
+# Claude starts again meanwhile it waits for that to finish too, and so on. Then the inhibitors
+# go, and a lid that is still closed suspends the computer as usual. There is no time limit
+# while Claude works. The top-bar extension shows Claude Code's spinner meanwhile.
 DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-busy"
 HOLDER="$DIR/.holder"
 # `claude-account keep-awake off` (or the top bar's right-click menu) creates this file.
 OFF="$HOME/.claude/accounts/keep-awake-off"
-STALE_MINUTES=20   # no hook for this long (e.g. you stopped Claude with Esc) counts as done
-CHECK_SECONDS=5
+WAIT_SECONDS=${CLAUDE_BUSY_WAIT:-60}    # after the last session is done, before sleep is allowed
+CHECK_SECONDS=${CLAUDE_BUSY_CHECK:-5}
 
 # The session id from the hook's JSON on stdin (one line), else the claude process id.
 session() {
@@ -38,9 +40,9 @@ holding() {
     [ -r "$HOLDER" ] && read -r h < "$HOLDER" && kill -0 "$h" 2>/dev/null
 }
 
-# Drop sessions whose claude is gone or that have been quiet too long; true if any are left.
+# Drop sessions whose claude process is gone (it crashed or was closed); true if any are left.
+# A session you stop with Esc is done once Claude Code says it's waiting for you.
 working() {
-    find "$DIR" -maxdepth 1 -type f ! -name '.*' -mmin +"$STALE_MINUTES" -delete 2>/dev/null
     left=1
     for f in "$DIR"/*; do
         [ -f "$f" ] || continue
@@ -72,6 +74,13 @@ hold)
     while :; do
         while working && [ ! -e "$OFF" ]; do sleep "$CHECK_SECONDS"; done
         [ -e "$OFF" ] && { rm -f "$HOLDER"; exit 0; }
+        # The waiting minute: Claude starting again keeps the computer awake.
+        waited=0
+        while [ "$waited" -lt "$WAIT_SECONDS" ] && ! working && [ ! -e "$OFF" ]; do
+            sleep "$CHECK_SECONDS"
+            waited=$((waited + CHECK_SECONDS))
+        done
+        working && [ ! -e "$OFF" ] && continue
         rm -f "$HOLDER"
         working || exit 0
         echo $$ > "$HOLDER"   # a session started just now
@@ -81,6 +90,8 @@ status)
     if working; then
         echo "working:"
         for f in "$DIR"/*; do echo "  ${f##*/}"; done
+    elif holding; then
+        echo "idle, staying awake for the waiting minute"
     else
         echo "idle"
     fi

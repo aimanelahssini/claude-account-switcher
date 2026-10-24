@@ -70,9 +70,10 @@ outside: whether Claude is working at all.
 Meanwhile the computer doesn't go to sleep:
 
 - **Idle:** GNOME's automatic suspend waits. The screen can still dim and lock as usual.
-- **Lid closed:** the laptop stays on and Claude keeps working. Once the last session is
-  done, the lid's normal action runs (suspend, by default), so a laptop in a bag doesn't
-  stay awake for nothing.
+- **Lid closed:** the laptop stays on and Claude keeps working, however long that takes.
+- **When Claude is done**, it waits one more minute. If Claude starts again meanwhile, it
+  waits for that to finish too, then another minute, and so on. After that the lid's normal
+  action runs (suspend, by default), so a laptop in a bag doesn't stay awake for nothing.
 - Choosing **Suspend** or **Power Off** yourself still works right away.
 
 <p align="center"><img src="docs/working-tooltip.png" width="452" alt="Tooltip under the mascot: Claude is working: no sleep until it's done, lid closed or not"></p>
@@ -84,9 +85,11 @@ and around each tool call it marks the session as working (one tiny file per ses
 minute, it clears it. While any session is working, one background `claude-busy hold` keeps
 two inhibitors (`systemd-inhibit --what=handle-lid-switch` and
 `gnome-session-inhibit --inhibit suspend`) and checks every 5 seconds whether it's still
-needed. A session whose `claude` process is gone, or that has had no activity for 20 minutes
-(for example after you stop it with Esc), counts as done. `claude-busy status` shows what's
-working.
+needed. There's no time limit while a session works. A session whose `claude` process is gone
+counts as done right away; one you stop with Esc counts as done once Claude Code reports it's
+waiting for you. After the last one, the inhibitors stay for the waiting minute.
+`claude-busy status` shows what's working, and when it's in the waiting minute.
+`tests/test_busy.sh` checks all of this with a fake `claude` in a few seconds.
 
 It's light: a hook call takes about 5 ms, nothing runs while Claude is idle, and the top bar
 reacts to files appearing and disappearing instead of polling. The spinner redraws a short
