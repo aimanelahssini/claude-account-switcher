@@ -303,6 +303,22 @@ async function switchTest() {
         pointer.notify_absolute_motion(GLib.get_monotonic_time(), 700, 600);
         await sleep(500);
     }
+    // The mascot is apart: from its menu, passing over an account does nothing, and from an
+    // account's history, passing over it does nothing (its menu exists by then).
+    await goTo(ext._tag);
+    await press(Clutter.BUTTON_SECONDARY);
+    await goTo(two);
+    check('switch: over an account from the mascot\'s menu: nothing', !!ext._options?.isOpen && !two._menu?.isOpen,
+        `mascot menu open=${ext._options?.isOpen} history open=${two._menu?.isOpen}`);
+    ext._options?.close();
+    pointer.notify_absolute_motion(GLib.get_monotonic_time(), 700, 600);
+    await sleep(500);
+    await goTo(one);
+    await press(Clutter.BUTTON_PRIMARY);
+    await goTo(ext._tag);
+    check('switch: over the mascot from an account\'s history: nothing', !!one._menu?.isOpen && ext._options?.isOpen === false,
+        `history open=${one._menu?.isOpen} mascot menu open=${ext._options?.isOpen}`);
+    one._menu?.close();
     out('DONE');
 }
 

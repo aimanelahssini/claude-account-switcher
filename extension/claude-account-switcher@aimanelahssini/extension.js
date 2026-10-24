@@ -414,6 +414,7 @@ export default class ClaudeAccountExtension extends Extension {
         this._buttons?.forEach(b => b._menu?.destroy());
         this._options?.destroy();
         this._options = null;
+        this._optionsManager = null;
         this._menuManager = null;
         this._buttons = [];
     }
@@ -917,12 +918,14 @@ export default class ClaudeAccountExtension extends Extension {
 
     _toggleOptions() {
         if (!this._options) {
-            this._menuManager ??= new PopupMenu.PopupMenuManager(this._indicator);
+            // Its own menu group: passing over the accounts with it open does nothing, nor does
+            // passing over it with an account's history open (those slide between accounts).
+            this._optionsManager ??= new PopupMenu.PopupMenuManager(this._tag);
             this._options = new PopupMenu.PopupMenu(this._tag, 0.5, St.Side.TOP);
             this._options.actor.add_style_class_name('claude-acct-menu');
             Main.uiGroup.add_child(this._options.actor);
             this._options.actor.hide();
-            this._menuManager.addMenu(this._options);
+            this._optionsManager.addMenu(this._options);
         }
         const menu = this._options;
         if (!menu.isOpen) {
