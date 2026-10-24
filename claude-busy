@@ -1,27 +1,54 @@
-#!/bin/sh
-# Keeps the computer awake while Claude Code is working, closed lid included.
-# Claude Code's hooks call it (install.sh adds them to ~/.claude/settings.json):
-#   claude-busy busy    a session started working (a prompt, a tool call)
-#   claude-busy idle    a session is done, or waiting for you
-# Each working session is a file in $XDG_RUNTIME_DIR/claude-busy holding its claude process id.
-# While any exist, a background `claude-busy hold` keeps two inhibitors: logind ignores the lid,
-# and GNOME doesn't suspend when idle. When the last session is done it waits a minute; if
-# Claude starts again meanwhile it waits for that to finish too, and so on. Then the inhibitors
-# go, and a lid that is still closed suspends the computer as usual. There is no time limit
-# while Claude works. The top-bar extension shows Claude Code's spinner meanwhile.
+#!/bin/bash
+# What Claude Code is doing, for the top bar, the ThinkPad lights and sleep. Claude Code's hooks
+# call it (install.sh adds them to ~/.claude/settings.json):
+#   claude-busy busy     a session works (a prompt, a tool call)
+#   claude-busy idle     a session is done
+#   claude-busy needs    a session waits for you (a permission prompt or a question)
+#   claude-busy ask      a permission prompt: waits for an answer from the notification
+#   claude-busy answer SESSION   (the top bar) passes that answer on, read from stdin
+#   claude-busy lights   puts the lights in line with the switches
+#   claude-busy status
+# Working sessions are files in $XDG_RUNTIME_DIR/claude-busy holding their claude process id;
+# sessions that wait for you are in its needs/ folder, permission prompts in ask/.
+# While any session works, a background `claude-busy hold` keeps two inhibitors: logind ignores
+# the lid and GNOME doesn't suspend when idle. There's no time limit while Claude works. A
+# session that waits for you keeps the computer awake 15 minutes, so the lights can tell you;
+# after that, and a minute after the last session is done, the inhibitors go and a lid that is
+# still closed suspends the computer as usual. The lid logo dot blinks with the top bar's
+# spinner while Claude works with the lid closed; it and the power light blink twice and pause
+# while a session waits for you.
 DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-busy"
 HOLDER="$DIR/.holder"
-# `claude-account keep-awake off` (or the top bar's right-click menu) creates this file.
-OFF="$HOME/.claude/accounts/keep-awake-off"
-WAIT_SECONDS=${CLAUDE_BUSY_WAIT:-60}    # after the last session is done, before sleep is allowed
+ACCOUNTS="$HOME/.claude/accounts"
+# The top bar's menu (or `claude-account keep-awake|lights|ask off`) creates these files.
+OFF="$ACCOUNTS/keep-awake-off"
+LIGHTS_OFF="$ACCOUNTS/lights-off"
+ASK_OFF="$ACCOUNTS/ask-off"
+WAIT_SECONDS=${CLAUDE_BUSY_WAIT:-60}        # after the last session is done, before sleep is allowed
+NEEDS_SECONDS=${CLAUDE_BUSY_NEEDS:-900}     # awake for a session that waits for you
 CHECK_SECONDS=${CLAUDE_BUSY_CHECK:-5}
+ASK_CHECK_SECONDS=${CLAUDE_BUSY_ASK_CHECK:-60}   # a waiting permission prompt checks claude is there
+LEDS=${CLAUDE_BUSY_LEDS:-/sys/class/leds}
+LID=${CLAUDE_BUSY_LID:-/proc/acpi/button/lid}
+# Light patterns: brightness/milliseconds pairs. In step with the top bar: the spinner's star
+# is big for 6 of its 12 frames of 120 ms, and "needs you" is blink, blink, pause.
+P_STEADY="255 1000 255 1000"
+P_WORKING="0 360 0 0 255 720 255 0 0 360 0 0"
+P_NEEDS="255 150 255 0 0 150 0 0 255 150 255 0 0 1800 0 0"
 
-# The session id from the hook's JSON on stdin (one line), else the claude process id.
+json=
+# The hook's JSON from stdin (one line); id = its session, else the claude process id.
 session() {
     IFS= read -r json || true
-    id=${json#*\"session_id\":\"}
-    id=${id%%\"*}
+    get session_id
+    id=$v
     case $id in ''|*[!A-Za-z0-9-]*) id="pid-$1" ;; esac
+}
+
+# v = the string field $1 of the hook's JSON, or empty.
+get() {
+    v=${json#*\"$1\":\"}
+    if [ "$v" = "$json" ]; then v=; else v=${v%%\"*}; fi
 }
 
 # The claude process this hook belongs to (hooks may run through a shell).
@@ -33,7 +60,7 @@ claude_pid() {
         [ "$comm" = "(claude)" ] && { echo "$p"; return; }
         p=$pp
     done
-    echo ""   # not found: no process check, only the quiet-too-long one
+    echo ""   # not found: no process check
 }
 
 holding() {
@@ -52,52 +79,206 @@ working() {
     return $left
 }
 
-case $1 in
-busy)
-    pid=$(claude_pid)
-    session "$pid"
-    [ -d "$DIR" ] || mkdir -p -m 700 "$DIR"
-    echo "$pid" > "$DIR/$id"
-    holding || [ -e "$OFF" ] && exit 0
+# Sessions waiting for you, the same way; true if any. With "recent", only those waiting for
+# less than NEEDS_SECONDS (they keep the computer awake).
+needing() {
+    left=1
+    for f in "$DIR"/needs/*; do
+        [ -f "$f" ] || continue
+        { read -r p; read -r since; } < "$f" 2>/dev/null
+        if [ -n "$p" ] && [ ! -d "/proc/$p" ]; then rm -f "$f"; continue; fi
+        [ "$1" = recent ] && [ $((EPOCHSECONDS - ${since:-0})) -ge "$NEEDS_SECONDS" ] && continue
+        left=0
+    done
+    return $left
+}
+
+# Start the background holder if it isn't running (and keep-awake is on).
+hold_on() {
+    holding || [ -e "$OFF" ] && return
     set -- "$0" hold
     command -v gnome-session-inhibit > /dev/null && [ -n "$DBUS_SESSION_BUS_ADDRESS" ] &&
         set -- gnome-session-inhibit --inhibit suspend --app-id claude-code --reason "Claude is working" "$@"
     setsid -f systemd-inhibit --what=handle-lid-switch --mode=block \
         --who="Claude Code" --why="Claude is working" "$@" < /dev/null > /dev/null 2>&1
+}
+
+# This session stops waiting for you; a permission prompt still open in a notification goes.
+unneed() {
+    rm -f "$DIR/needs/$id"
+    if [ -r "$DIR/ask/$id.pid" ]; then
+        read -r a < "$DIR/ask/$id.pid" && kill "$a" 2>/dev/null
+        rm -f "$DIR/ask/$id.pid" "$DIR/ask/$id.json" "$DIR/ask/$id.fifo"
+    fi
+}
+
+# This session waits for you ($1: permission, question or plan).
+need() {
+    rm -f "$DIR/$id"
+    [ -d "$DIR/needs" ] || mkdir -p -m 700 "$DIR/needs"
+    if [ ! -e "$DIR/needs/$id" ]; then
+        get cwd
+        cwd=$v
+        get transcript_path
+        printf '%s\n%s\n%s\n%s\n%s\n' "$pid" "$EPOCHSECONDS" "$1" "$cwd" "$v" > "$DIR/needs/$id"
+    fi
+}
+
+lid_closed() {
+    for f in "$LID"/*/state; do
+        [ -r "$f" ] || continue
+        read -r _ state < "$f"
+        [ "$state" = closed ] && return 0
+    done
+    return 1
+}
+
+# Put a pattern on one light, unless it already has it.
+light() {
+    L="$LEDS/tpacpi::$1"
+    [ -w "$L/pattern" ] || return
+    cache="$DIR/.light-$1"
+    [ -r "$cache" ] && read -r was < "$cache" && [ "$was" = "$2" ] && return
+    eval "pattern=\$P_${2^^}"
+    if [ "$2" = steady ]; then echo 1 > "$L/repeat"; else echo -1 > "$L/repeat"; fi
+    echo "$pattern" > "$L/pattern" 2>/dev/null
+    echo "$2" > "$cache"
+}
+
+# The lights for what's going on now. The lid dot only speaks with the lid closed; the power
+# light when a session waits for you.
+lights() {
+    dot=steady power=steady
+    if [ ! -e "$LIGHTS_OFF" ]; then
+        if needing; then
+            power=needs
+            lid_closed && dot=needs
+        elif working && lid_closed; then
+            dot=working
+        fi
+    fi
+    light lid_logo_dot "$dot"
+    light power "$power"
+}
+
+case $1 in
+busy)
+    pid=$(claude_pid)
+    session "$pid"
+    [ -d "$DIR" ] || mkdir -p -m 700 "$DIR"
+    get hook_event_name
+    event=$v
+    get tool_name
+    # A question or a plan to approve: Claude waits for you from here on.
+    if [ "$event" = PreToolUse ] && { [ "$v" = AskUserQuestion ] || [ "$v" = ExitPlanMode ]; }; then
+        unneed
+        [ "$v" = AskUserQuestion ] && need question || need plan
+    else
+        unneed
+        echo "$pid" > "$DIR/$id"
+    fi
+    hold_on
+    lights
     ;;
 idle)
-    session "$(claude_pid)"
+    pid=$(claude_pid)
+    session "$pid"
+    get hook_event_name
+    # "Waiting for your input" while a prompt is open: still waiting for you, not done.
+    [ "$v" = Notification ] && [ -e "$DIR/needs/$id" ] || unneed
     rm -f "$DIR/$id"
+    lights
+    ;;
+needs)
+    pid=$(claude_pid)
+    session "$pid"
+    get notification_type
+    [ "$v" = elicitation_dialog ] && need question || need permission
+    hold_on
+    lights
+    ;;
+ask)
+    # Shown in the terminal at the same time; whichever you answer first counts. Answered in
+    # the terminal, the next hook for this session ends this one (unneed).
+    pid=$(claude_pid)
+    session "$pid"
+    need permission
+    hold_on
+    lights
+    [ -e "$ASK_OFF" ] && exit 0
+    A="$DIR/ask"
+    [ -d "$A" ] || mkdir -p -m 700 "$A"
+    rm -f "$A/$id.fifo"
+    mkfifo -m 600 "$A/$id.fifo" || exit 0
+    printf '%s\n' "$json" > "$A/$id.json.tmp" && mv "$A/$id.json.tmp" "$A/$id.json"
+    echo $$ > "$A/$id.pid"
+    trap 'rm -f "$A/$id.fifo" "$A/$id.pid" "$A/$id.json"; exit 0' TERM INT
+    exec 3<> "$A/$id.fifo"
+    answer=
+    # Blocks without using the CPU; once a minute it checks that claude is still there.
+    while :; do
+        if read -t "$ASK_CHECK_SECONDS" -r answer <&3; then break; fi
+        [ -n "$pid" ] && [ ! -d "/proc/$pid" ] && break
+    done
+    rm -f "$A/$id.fifo" "$A/$id.pid" "$A/$id.json"
+    case $answer in
+    '{'*)
+        printf '%s\n' "$answer"
+        rm -f "$DIR/needs/$id"
+        echo "$pid" > "$DIR/$id"
+        lights
+        ;;
+    esac
+    ;;
+answer)
+    # The top bar's answer to a permission prompt (a hook decision, one line on stdin).
+    id=$2
+    case $id in ''|*[!A-Za-z0-9-]*) exit 2 ;; esac
+    IFS= read -r line
+    case $line in '{'*) ;; *) exit 2 ;; esac
+    F="$DIR/ask/$id.fifo"
+    [ -p "$F" ] && [ -r "$DIR/ask/$id.pid" ] || exit 1
+    timeout 5 sh -c 'printf "%s\n" "$1" > "$2"' _ "$line" "$F"
     ;;
 hold)
     echo $$ > "$HOLDER"
-    while :; do
-        while working && [ ! -e "$OFF" ]; do sleep "$CHECK_SECONDS"; done
-        [ -e "$OFF" ] && { rm -f "$HOLDER"; exit 0; }
-        # The waiting minute: Claude starting again keeps the computer awake.
-        waited=0
-        while [ "$waited" -lt "$WAIT_SECONDS" ] && ! working && [ ! -e "$OFF" ]; do
-            sleep "$CHECK_SECONDS"
-            waited=$((waited + CHECK_SECONDS))
-        done
-        working && [ ! -e "$OFF" ] && continue
-        rm -f "$HOLDER"
-        working || exit 0
-        echo $$ > "$HOLDER"   # a session started just now
+    last=$EPOCHSECONDS
+    while [ ! -e "$OFF" ]; do
+        if working || needing recent; then
+            last=$EPOCHSECONDS
+        elif [ $((EPOCHSECONDS - last)) -ge "$WAIT_SECONDS" ]; then
+            rm -f "$HOLDER"
+            # Claude started again just as the waiting minute ended.
+            working || needing recent || break
+            echo $$ > "$HOLDER"
+            last=$EPOCHSECONDS
+        fi
+        lights
+        sleep "$CHECK_SECONDS"
     done
+    rm -f "$HOLDER"
+    lights
+    ;;
+lights)
+    # After a switch in the top bar's menu.
+    lights
     ;;
 status)
+    if needing; then
+        echo "waiting for you:"
+        for f in "$DIR"/needs/*; do sed -n 3p "$f" | sed "s/^/  ${f##*/} (/;s/$/)/"; done
+    fi
     if working; then
         echo "working:"
-        for f in "$DIR"/*; do echo "  ${f##*/}"; done
+        for f in "$DIR"/*; do [ -f "$f" ] && echo "  ${f##*/}"; done
     elif holding; then
         echo "idle, staying awake for the waiting minute"
-    else
+    elif ! needing; then
         echo "idle"
     fi
     ;;
 *)
-    echo "usage: claude-busy busy|idle|status" >&2
+    echo "usage: claude-busy busy|idle|needs|ask|lights|status" >&2
     exit 2
     ;;
 esac

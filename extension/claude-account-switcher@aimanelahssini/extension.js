@@ -1,9 +1,11 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import * as Dialog from 'resource:///org/gnome/shell/ui/dialog.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
@@ -16,6 +18,20 @@ const TRACK_WIDTH = 44;
 const POLL_SECONDS = 60;
 // claude-busy keeps one file per working Claude Code session here.
 const BUSY_DIR = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'claude-busy']);
+const NEEDS_DIR = GLib.build_filenamev([BUSY_DIR, 'needs']);
+const ASK_DIR = GLib.build_filenamev([BUSY_DIR, 'ask']);
+const BUSY_CMD = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'claude-busy']);
+// "Needs you": the white dot blinks twice and pauses, [opacity, ms] steps. The ThinkPad lights
+// play the same (claude-busy's patterns, repeated here to re-align them with the top bar).
+const NEEDS_STEPS = [[255, 150], [90, 150], [255, 150], [90, 1800]];
+const LEDS = GLib.getenv('CLAUDE_BUSY_LEDS') || '/sys/class/leds';  // tests use stand-ins
+const LED_PATTERNS = {
+    working: '0 360 0 0 255 720 255 0 0 360 0 0',
+    needs: '255 150 255 0 0 150 0 0 255 150 255 0 0 1800 0 0',
+};
+const REALIGN_MS = 30000;
+const NAME_CHARS = 20;
+const TITLE_TAIL = 512 * 1024;  // bytes at the end of a chat's transcript searched for its title
 // Claude Code's spinner, as it looks in a terminal on Linux: the glyph runs forward then back,
 // and a three-letter glimmer sweeps over the word. One light timer drives both.
 const SPINNER = ['·', '✢', '*', '✶', '✻', '✽'];
@@ -142,16 +158,96 @@ function label(n) {
     return n === '-' ? '−' : n;
 }
 
+function readText(path) {
+    try {
+        return new TextDecoder().decode(GLib.file_get_contents(path)[1]);
+    } catch {
+        return null;
+    }
+}
+
+// Claude Code titles its terminal "✳ <chat title>" (a spinner instead of ✳ while it works);
+// Ptyxis adds " — claude" when Claude runs under a shell.
+function bareTitle(title) {
+    return (title || '').replace(/^[^\p{L}\p{N}]+/u, '').trim();
+}
+
+function showsTitle(windowTitle, title) {
+    return !!title && (windowTitle === title || windowTitle.startsWith(`${title} — `));
+}
+
+// A chat's current title, from the end of its transcript (Claude rewrites it often).
+function readChatTitle(path) {
+    try {
+        const file = Gio.File.new_for_path(path);
+        const size = file.query_info('standard::size', 0, null).get_size();
+        const stream = file.read(null);
+        stream.seek(Math.max(0, size - TITLE_TAIL), GLib.SeekType.SET, null);
+        const parts = [];
+        let bytes;
+        while ((bytes = stream.read_bytes(65536, null)).get_size() > 0)
+            parts.push(new TextDecoder().decode(bytes.toArray()));
+        stream.close(null);
+        const text = parts.join('');
+        const last = key => [...text.matchAll(new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`, 'g'))].pop();
+        const m = last('customTitle') ?? last('aiTitle');
+        return m ? JSON.parse(`"${m[1]}"`) : null;
+    } catch {
+        return null;
+    }
+}
+
+function shorten(text, n) {
+    return text.length > n ? `${text.slice(0, n - 1).trimEnd()}…` : text;
+}
+
+// A permission prompt in plain words: [question, detail].
+function describeRequest(tool, input = {}) {
+    const name = path => GLib.path_get_basename(path || '');
+    switch (tool) {
+    case 'Bash':
+        return [input.description ? `${input.description.replace(/\.$/, '')}?` : 'Run a command?', `$ ${input.command ?? ''}`];
+    case 'Edit':
+    case 'MultiEdit':
+        return [`Edit ${name(input.file_path)}?`, input.file_path ?? ''];
+    case 'Write':
+        return [`Write ${name(input.file_path)}?`, input.file_path ?? ''];
+    case 'NotebookEdit':
+        return [`Edit ${name(input.notebook_path)}?`, input.notebook_path ?? ''];
+    case 'Read':
+        return [`Read ${name(input.file_path)}?`, input.file_path ?? ''];
+    case 'WebFetch':
+        try {
+            return [`Open ${GLib.Uri.parse(input.url, 0).get_host()}?`, input.url];
+        } catch {
+            return ['Open a web page?', input.url ?? ''];
+        }
+    case 'WebSearch':
+        return [`Search the web for “${input.query ?? ''}”?`, ''];
+    default: {
+        const mcp = /^mcp__(.+?)__(.+)$/.exec(tool ?? '');
+        const what = mcp ? `${mcp[2].replace(/_/g, ' ')} (${mcp[1].replace(/_/g, ' ')})` : tool ?? 'a tool';
+        return [`Use ${what}?`, shorten(JSON.stringify(input), 160)];
+    }
+    }
+}
+
 export default class ClaudeAccountExtension extends Extension {
     enable() {
         this._indicator = new PanelMenu.Button(0.0, 'Claude Account', true);
         this._box = new St.BoxLayout({style_class: 'claude-acct-box'});
-        // Claude Code's mascot: grey, orange with its spinner next to it while Claude works.
+        // Claude Code's mascot; Claude Code's spinner in its place while Claude works, and a white
+        // blinking dot with the chat's name while a chat waits for you (click: open that chat).
         // Click or right-click: the options menu.
         const tagBox = new St.BoxLayout({style_class: 'claude-acct-tag-box'});
         this._tag = new St.Button({style_class: 'claude-acct-btn claude-acct-tag', child: tagBox,
             y_align: Clutter.ActorAlign.CENTER, button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE});
-        this._tag.connect('clicked', () => this._toggleOptions());
+        this._tag.connect('clicked', (btn, mouse) => {
+            if (this._needs?.length && mouse !== 3)
+                this._openChat(this._needs[0]);
+            else
+                this._toggleOptions();
+        });
         this._mascot = new St.DrawingArea({style_class: 'claude-acct-mascot', y_align: Clutter.ActorAlign.CENTER});
         this._mascot.connect('repaint', area => this._drawMascot(area));
         tagBox.add_child(this._mascot);
@@ -163,6 +259,13 @@ export default class ClaudeAccountExtension extends Extension {
         this._spinner.add_child(this._glyph);
         this._spinner.add_child(this._verb);
         tagBox.add_child(this._spinner);
+        this._needsBox = new St.BoxLayout({style_class: 'claude-acct-needs', visible: false,
+            y_align: Clutter.ActorAlign.CENTER});
+        this._needsDot = new St.Label({text: '●', style_class: 'claude-acct-needs-dot', y_align: Clutter.ActorAlign.CENTER});
+        this._needsName = new St.Label({y_align: Clutter.ActorAlign.CENTER});
+        this._needsBox.add_child(this._needsDot);
+        this._needsBox.add_child(this._needsName);
+        tagBox.add_child(this._needsBox);
         this._tag.connect('notify::hover', () => this._showTooltip(this._tag));
         this._box.add_child(this._tag);
         this._indicator.add_child(this._box);
@@ -181,17 +284,35 @@ export default class ClaudeAccountExtension extends Extension {
         this._refresh();
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
-        // Orange while Claude Code is working (see claude-busy), grey otherwise.
+        // What Claude Code is doing, from claude-busy's files: working sessions, sessions waiting
+        // for you, and permission prompts to offer as notifications.
         this._busy = null;
-        GLib.mkdir_with_parents(BUSY_DIR, 0o700);
-        this._busyMonitor = Gio.File.new_for_path(BUSY_DIR).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
-        this._busyMonitor.connect('changed', (m, f, o, event) => {
-            // Each tool call rewrites its session's file; only files coming and going matter.
-            if (event !== Gio.FileMonitorEvent.CHANGED && event !== Gio.FileMonitorEvent.CHANGES_DONE_HINT &&
-                event !== Gio.FileMonitorEvent.ATTRIBUTE_CHANGED)
-                this._syncBusy();
-        });
+        this._needs = [];
+        this._needsKey = '';
+        this._titles = new Map();   // transcript -> chat title
+        this._asks = new Map();     // session -> notification
+        this._dirMonitors = [];
+        for (const [dir, sync] of [[BUSY_DIR, () => this._syncBusy()], [NEEDS_DIR, () => this._syncBusy()],
+            [ASK_DIR, () => this._syncAsks()]]) {
+            GLib.mkdir_with_parents(dir, 0o700);
+            const monitor = Gio.File.new_for_path(dir).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
+            monitor.connect('changed', (m, f, o, event) => {
+                // Each tool call rewrites its session's file; only files coming and going matter.
+                if (event !== Gio.FileMonitorEvent.CHANGED && event !== Gio.FileMonitorEvent.CHANGES_DONE_HINT &&
+                    event !== Gio.FileMonitorEvent.ATTRIBUTE_CHANGED)
+                    sync();
+            });
+            this._dirMonitors.push(monitor);
+        }
         this._syncBusy();
+        this._syncAsks();
+        // Our banners open expanded, with their Yes / Always / No buttons showing.
+        Main.messageTray.connectObject('queue-changed', () => GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            const tray = Main.messageTray;
+            if (tray._banner && !tray._banner.expanded && [...this._asks?.values() ?? []].includes(tray._notification))
+                tray._banner.expand(false);
+            return GLib.SOURCE_REMOVE;
+        }), this);
 
         this._fetchUsage();
         this._timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, POLL_SECONDS, () => {
@@ -204,9 +325,16 @@ export default class ClaudeAccountExtension extends Extension {
         if (this._timer)
             GLib.source_remove(this._timer);
         this._timer = null;
-        this._busyMonitor?.cancel();
-        this._busyMonitor = null;
+        Main.messageTray.disconnectObject(this);
+        this._dirMonitors?.forEach(m => m.cancel());
+        this._dirMonitors = [];
         this._spin(false);
+        this._blink(false);
+        for (const n of this._asks?.values() ?? [])
+            n.destroy();
+        this._asks = new Map();
+        this._source?.destroy();
+        this._source = null;
         this._monitor?.cancel();
         this._monitor = null;
         this._indicator?.destroy();
@@ -220,26 +348,210 @@ export default class ClaudeAccountExtension extends Extension {
         this._buttons = [];
     }
 
-    _syncBusy() {
-        let busy = false;
+    // Sessions: files named by session id, regular files only (needs/ and ask/ are folders).
+    _sessionFiles(dir) {
+        const names = [];
         try {
-            const en = Gio.File.new_for_path(BUSY_DIR).enumerate_children('standard::name', 0, null);
+            const en = Gio.File.new_for_path(dir).enumerate_children('standard::name,standard::type', 0, null);
             let info;
-            while (!busy && (info = en.next_file(null)))
-                busy = !info.get_name().startsWith('.');
+            while ((info = en.next_file(null))) {
+                if (info.get_file_type() === Gio.FileType.REGULAR && !info.get_name().startsWith('.'))
+                    names.push(info.get_name());
+            }
             en.close(null);
         } catch {}
-        if (busy === this._busy)
+        return names;
+    }
+
+    // Chats waiting for you, longest waiting first: {id, pid, since, kind, cwd, transcript}.
+    _readNeeds() {
+        return this._sessionFiles(NEEDS_DIR).map(id => {
+            const [pid, since, kind, cwd, transcript] = (readText(GLib.build_filenamev([NEEDS_DIR, id])) ?? '').split('\n');
+            return {id, pid: +pid || 0, since: +since || 0, kind, cwd, transcript};
+        }).filter(e => !e.pid || GLib.file_test(`/proc/${e.pid}`, GLib.FileTest.EXISTS))
+            .sort((x, y) => x.since - y.since);
+    }
+
+    _syncBusy() {
+        const busy = this._sessionFiles(BUSY_DIR).length > 0;
+        const needs = this._readNeeds();
+        const needsKey = needs.map(e => e.id).join();
+        if (busy === this._busy && needsKey === this._needsKey)
             return;
-        this._busy = busy;
-        if (busy)
-            this._tag.add_style_class_name('busy');
-        else
-            this._tag.remove_style_class_name('busy');
-        this._mascot.queue_repaint();
-        this._spin(busy);
+        const wasNeeding = this._needs.length > 0;
+        this._needs = needs;
+        this._needsKey = needsKey;
+        // Waiting for you comes first: it's the one you can do something about.
+        if (needs.length) {
+            this._needsName.text = needs.length > 1 ? `${needs.length} chats` : shorten(this._chatName(needs[0]), NAME_CHARS);
+            if (!wasNeeding)
+                this._blink(true);
+        } else {
+            this._blink(false);
+        }
+        const spin = busy && !needs.length;
+        if (busy !== this._busy || spin !== !!this._spinTimer) {
+            this._busy = busy;
+            if (busy)
+                this._tag.add_style_class_name('busy');
+            else
+                this._tag.remove_style_class_name('busy');
+            this._mascot.queue_repaint();
+            this._spin(spin);
+        }
+        this._mascot.visible = !spin && !needs.length;
         if (this._tag.hover)
             this._showTooltip(this._tag);
+    }
+
+    // The chat's title (as in its window's title), else its project folder.
+    _chatName(entry) {
+        let title = this._titles.get(entry.transcript);
+        if (title === undefined && entry.transcript) {
+            title = readChatTitle(entry.transcript);
+            this._titles.set(entry.transcript, title);
+        }
+        if (title)
+            return title;
+        const home = GLib.get_home_dir();
+        return entry.cwd && entry.cwd !== home ? GLib.path_get_basename(entry.cwd) : 'Claude';
+    }
+
+    // The project, for a notification's title: its folder, or the chat's title in the home folder.
+    _projectName(entry) {
+        return entry.cwd && entry.cwd !== GLib.get_home_dir() ? GLib.path_get_basename(entry.cwd) : this._chatName(entry);
+    }
+
+    // The terminal window a chat runs in: the one showing its title, else the terminal that
+    // started its claude process.
+    _chatWindow(entry) {
+        const windows = global.get_window_actors().map(a => a.meta_window)
+            .filter(w => w.get_window_type() === Meta.WindowType.NORMAL);
+        if (entry.transcript)
+            this._titles.delete(entry.transcript);  // titles change; read it fresh for a click
+        const title = this._chatName(entry);
+        const byTitle = windows.find(w => showsTitle(bareTitle(w.get_title()), title));
+        if (byTitle)
+            return byTitle;
+        let pid = entry.pid;
+        for (let i = 0; i < 8 && pid > 1; i++) {
+            const mine = windows.filter(w => w.get_pid() === pid);
+            if (mine.length)
+                return mine.sort((x, y) => y.get_user_time() - x.get_user_time())[0];
+            const stat = readText(`/proc/${pid}/stat`);
+            pid = stat ? +stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1] : 0;
+        }
+        return null;
+    }
+
+    _openChat(entry) {
+        const win = this._chatWindow(entry);
+        if (win)
+            Main.activateWindow(win);
+        this._tooltip.hide();
+    }
+
+    // The white dot: blink, blink, pause, in step with the lights.
+    _blink(on) {
+        if (this._blinkTimer)
+            GLib.source_remove(this._blinkTimer);
+        this._blinkTimer = null;
+        if (!this._needsBox)
+            return;
+        this._needsBox.visible = on;
+        if (!on)
+            return;
+        let step = 0, lastAlign = 0;
+        const next = () => {
+            const [opacity, ms] = NEEDS_STEPS[step % NEEDS_STEPS.length];
+            this._needsDot.opacity = opacity;
+            if (step % NEEDS_STEPS.length === 0 && GLib.get_monotonic_time() - lastAlign >= REALIGN_MS * 1000) {
+                lastAlign = GLib.get_monotonic_time();
+                this._alignLights('needs');
+            }
+            step++;
+            this._blinkTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, next);
+            return GLib.SOURCE_REMOVE;
+        };
+        next();
+    }
+
+    // Restart the lights' pattern in step with the top bar, if they show this state now.
+    _alignLights(state) {
+        for (const led of ['lid_logo_dot', 'power']) {
+            if (readText(GLib.build_filenamev([BUSY_DIR, `.light-${led}`]))?.trim() !== state)
+                continue;
+            try {
+                const stream = Gio.File.new_for_path(`${LEDS}/tpacpi::${led}/pattern`).append_to(Gio.FileCreateFlags.NONE, null);
+                stream.write_all(new TextEncoder().encode(LED_PATTERNS[state]), null);
+                stream.close(null);
+            } catch {}
+        }
+    }
+
+    // ---- permission prompts as notifications ----------------------------------------
+    _syncAsks() {
+        const ids = new Set(this._sessionFiles(ASK_DIR).filter(n => n.endsWith('.json')).map(n => n.slice(0, -5)));
+        for (const [id, n] of this._asks) {
+            if (!ids.has(id)) {
+                this._asks.delete(id);
+                n.destroy();   // answered in the terminal, or the chat went away
+            }
+        }
+        for (const id of ids) {
+            if (!this._asks.has(id))
+                this._notifyAsk(id);
+        }
+    }
+
+    _notifyAsk(id) {
+        let input;
+        try {
+            input = JSON.parse(readText(GLib.build_filenamev([ASK_DIR, `${id}.json`])));
+        } catch {
+            return;
+        }
+        const entry = this._readNeeds().find(e => e.id === id) ??
+            {id, cwd: input.cwd, transcript: input.transcript_path, pid: 0};
+        // You're looking at that chat already: its own prompt is right there.
+        const focus = global.display.focus_window;
+        if (focus && focus === this._chatWindow(entry))
+            return;
+        const [question, detail] = describeRequest(input.tool_name, input.tool_input);
+        if (!this._source) {
+            this._source = new MessageTray.Source({title: 'Claude Code',
+                icon: Gio.FileIcon.new(this.dir.get_child('icons').get_child('claude-code.svg'))});
+            this._source.connect('destroy', () => { this._source = null; });
+            Main.messageTray.add(this._source);
+        }
+        const n = new MessageTray.Notification({source: this._source, title: this._projectName(entry),
+            // GNOME shows a notification's text on one line.
+            body: detail ? `${question} — ${shorten(detail, 300)}` : question,
+            // Claude is stuck until you answer: it stays until then (or until the terminal's answer).
+            urgency: MessageTray.Urgency.CRITICAL});
+        const decide = decision => this._answer(id, {hookSpecificOutput: {hookEventName: 'PermissionRequest', decision}});
+        n.addAction('Yes', () => decide({behavior: 'allow'}));
+        const always = (input.permission_suggestions ?? []).filter(x => x.type !== 'setMode');
+        if (always.length)
+            n.addAction('Always', () => decide({behavior: 'allow', updatedPermissions: always}));
+        n.addAction('No', () => decide({behavior: 'deny', message: 'The user said no (from a notification).', interrupt: true}));
+        n.connect('activated', () => this._openChat(entry));
+        n.connect('destroy', () => {
+            if (this._asks.get(id) === n)
+                this._asks.delete(id);
+        });
+        this._asks.set(id, n);
+        this._source.addNotification(n);
+    }
+
+    _answer(id, decision) {
+        try {
+            const proc = Gio.Subprocess.new([BUSY_CMD, 'answer', id],
+                Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+            proc.communicate_utf8_async(`${JSON.stringify(decision)}\n`, null, () => {});
+        } catch (e) {
+            console.log(`claude-account-switcher: answer failed: ${e.message}`);
+        }
     }
 
     _drawMascot(area) {
@@ -278,7 +590,7 @@ export default class ClaudeAccountExtension extends Extension {
         if (!on)
             return;
         const verbs = this._verbs();
-        let word = null, chars, since, sweep = 0, frame = 0;
+        let word = null, chars, since, sweep = 0, frame = 0, lastAlign = 0;
         const pick = () => {
             word = `${this._nextVerb(verbs)}…`;
             chars = [...word];
@@ -296,6 +608,11 @@ export default class ClaudeAccountExtension extends Extension {
             const text = chars.map((ch, i) => Math.abs(i - glimmer) <= 1
                 ? `<span foreground="${SHIMMER}">${GLib.markup_escape_text(ch, -1)}</span>`
                 : GLib.markup_escape_text(ch, -1)).join('');
+            // The lid dot blinks with the star (claude-busy); keep the two in step.
+            if (frame % SPINNER_FRAMES.length === 0 && GLib.get_monotonic_time() - lastAlign >= REALIGN_MS * 1000) {
+                lastAlign = GLib.get_monotonic_time();
+                this._alignLights('working');
+            }
             this._glyph.text = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
             this._verb.clutter_text.set_markup(text);
             frame++;
@@ -467,8 +784,8 @@ export default class ClaudeAccountExtension extends Extension {
         const menu = this._options;
         if (!menu.isOpen) {
             menu.removeAll();
-            const status = new PopupMenu.PopupMenuItem(this._busy ? 'Claude is working' : 'Claude is idle',
-                {reactive: false, can_focus: false});
+            const status = new PopupMenu.PopupMenuItem(this._needs.length ? 'Claude needs you'
+                : this._busy ? 'Claude is working' : 'Claude is idle', {reactive: false, can_focus: false});
             status.label.add_style_class_name('claude-acct-menu-status');
             menu.addMenuItem(status);
             menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -484,9 +801,33 @@ export default class ClaudeAccountExtension extends Extension {
             });
             menu.addMenuItem(auto);
             menu.addMenuItem(this._hint('To the account with the most room left'));
+            const ask = new PopupMenu.PopupSwitchMenuItem('Permission prompts as notifications', this._option('ask'));
+            ask.connect('toggled', (item, on) => this._setOption('ask', on));
+            menu.addMenuItem(ask);
+            menu.addMenuItem(this._hint('Yes, Always or No without going to the terminal'));
+            // ThinkPads only; claude-busy can drive them once install-lights.sh has run.
+            if (GLib.file_test(`${LEDS}/tpacpi::lid_logo_dot`, GLib.FileTest.IS_DIR)) {
+                const ready = GLib.access(`${LEDS}/tpacpi::lid_logo_dot/pattern`, 2) === 0;
+                const lights = new PopupMenu.PopupSwitchMenuItem('Blink the ThinkPad lights', ready && this._option('lights'));
+                lights.setSensitive(ready);
+                lights.connect('toggled', (item, on) => {
+                    this._setOption('lights', on);
+                    this._runBusy('lights');
+                });
+                menu.addMenuItem(lights);
+                menu.addMenuItem(this._hint(ready ? 'Lid logo while Claude works, both lights when it needs you'
+                    : 'Needs a one-time setup: install-lights.sh'));
+            }
         }
         this._tooltip.hide();
         menu.toggle();
+    }
+
+    // claude-busy for a change made here (the lights follow a switch at once).
+    _runBusy(...args) {
+        try {
+            Gio.Subprocess.new([BUSY_CMD, ...args], Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+        } catch {}
     }
 
     _hint(text) {
@@ -745,7 +1086,12 @@ export default class ClaudeAccountExtension extends Extension {
             this._tooltip.hide();
             return;
         }
-        if (b === this._tag)
+        if (b === this._tag && this._needs.length > 1)
+            this._tooltip.text = `Claude needs you in ${this._needs.map(e => `“${this._chatName(e)}”`).join(', ')}. ` +
+                'Click to open the first';
+        else if (b === this._tag && this._needs.length)
+            this._tooltip.text = `Claude needs you in “${this._chatName(this._needs[0])}”. Click to open it`;
+        else if (b === this._tag)
             this._tooltip.text = this._busy ? 'Claude is working: no sleep until it\'s done, lid closed or not'
                 : 'Claude is idle';
         else if (b === this._addBtn)

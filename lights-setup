@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run by udev (and install-lights.sh) for each light: the kernel's pattern trigger, the light
+# steady on as usual, and its pattern writable by the given group.
+#   claude-lights-setup tpacpi::lid_logo_dot GROUP
+L=/sys/class/leds/$1
+modprobe ledtrig-pattern 2>/dev/null
+echo pattern > "$L/trigger" || exit 0
+echo 1 > "$L/repeat"
+echo "255 1000 255 1000" > "$L/pattern"
+chgrp "$2" "$L/pattern" "$L/repeat"
+chmod 664 "$L/pattern" "$L/repeat"

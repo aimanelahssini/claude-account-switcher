@@ -33,22 +33,28 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
   idle; while it works, Claude Code's own spinner takes its place (see below).
 - **No sleep while Claude works.** Close the lid mid-task and the laptop keeps going until
   Claude is done, then does what closing the lid normally does.
+- **Tells you when Claude needs you.** A white blinking dot and the chat's name in the top
+  bar (click: that chat's window), and permission prompts as notifications with **Yes**,
+  **Always** and **No**. On ThinkPads, the lid logo and the power light blink too.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
 <p align="center"><img src="docs/history.png" width="380" alt="History panel in percent: 53% of the 5-hour limit, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak"> <img src="docs/history-tokens.png" width="380" alt="The same panel switched to tokens: 13M tokens in the last 24 hours, hourly bars in tokens with the busiest hour, and tokens per window"></p>
 
 ## Options
 
-Click the mascot (or right-click it) to turn either feature off or back on. Both are on by default.
+Click the mascot (or right-click it) to turn any of these off or back on. All are on by default.
 
-<p align="center"><img src="docs/options.png" width="344" alt="Menu under the mascot: Claude is idle, with switches for Stay awake while Claude works and Switch accounts at 100%"></p>
+<p align="center"><img src="docs/options.png" width="409" alt="Menu under the mascot: Claude is working, with switches for Stay awake while Claude works, Switch accounts at 100%, Permission prompts as notifications and Blink the ThinkPad lights"></p>
 
 - **Stay awake while Claude works:** see [While Claude works](#while-claude-works).
 - **Switch accounts at 100%:** checked with every usage update (once a minute). It only moves
   to an account that is signed in and under its limit; if they're all full, it stays. The
   chat you're in continues on the new account with your next message.
 
-From the terminal: `claude-account keep-awake on|off` and `claude-account auto-switch on|off`.
+- **Permission prompts as notifications** and **Blink the ThinkPad lights:** see
+  [When Claude needs you](#when-claude-needs-you). The lights switch shows on ThinkPads only.
+
+From the terminal: `claude-account keep-awake|auto-switch|ask|lights on|off`.
 
 ## While Claude works
 
@@ -95,6 +101,58 @@ It's light: a hook call takes about 5 ms, nothing runs while Claude is idle, and
 reacts to files appearing and disappearing instead of polling. The spinner redraws a short
 label every 120 ms only while Claude works.
 
+## When Claude needs you
+
+When a chat stops for a permission prompt, a question or a plan to approve:
+
+<p align="center"><img src="docs/needs.png" width="377" alt="Top bar: a white dot and the chat's name, Fix the poster uplo…, where the spinner was"></p>
+
+- **Top bar:** a white dot that blinks twice and pauses, and the chat's name (its title, as in
+  its window). It comes before the spinner of another chat that's still working, since it's
+  the one you can do something about. **Click it** to bring that chat's terminal window to the
+  front, on whatever desktop it's on; right-click for the menu. With several chats waiting it
+  says **2 chats**, and a click opens the one that has waited longest. Hover for their names.
+- **Notification**, for permission prompts: the project as its title, the request in plain
+  words and the exact command, and **Yes**, **Always** (when Claude Code offers "don't ask
+  again") and **No**. The prompt stays open in the terminal too; whichever you answer first
+  counts, and the other goes away by itself. No notification for the chat you're looking at.
+  **No** stops Claude like the terminal's No does, so you can tell it what to do instead.
+
+<p align="center"><img src="docs/notification.png" width="520" alt="Notification titled listr: Delete pezei.py? — $ rm -f pezei.py, with Yes, Always and No buttons"></p>
+
+- **Sleep:** a chat that waits for you keeps the computer awake 15 minutes (plus the waiting
+  minute), so the lights can tell you; then the lid's normal action runs as usual.
+
+**ThinkPad lights** (after a one-time setup, below):
+
+| | Lid logo dot | Power button light |
+|---|---|---|
+| Claude works | blinks with the spinner's star (on while it's big), **lid closed only** | as usual |
+| A chat needs you | blink, blink, pause, **lid closed only** | blink, blink, pause |
+| Otherwise | as usual: on while the laptop is on, a slow blink while it sleeps | as usual |
+
+The dot only speaks with the lid closed: open, it faces the people across from you, and the
+top bar says it already. The lights and the top bar move together: they start at the same
+moment and the top bar puts them back in step every 30 seconds. The kernel plays the blinking
+by itself (its LED pattern trigger), so it costs no CPU.
+
+The setup lets your user drive these two lights and nothing else. It needs your password once:
+
+```bash
+pkexec ./install-lights.sh     # or sudo; undo with uninstall-lights.sh
+```
+
+It loads the kernel's `ledtrig-pattern` module at boot and adds a udev rule that switches the
+two lights to it, steady on as usual, with their `pattern` writable by your group.
+
+**How:** Claude Code's hooks tell `claude-busy` when a chat waits for you (`Notification`
+for prompts and questions, `PreToolUse` for `AskUserQuestion` and `ExitPlanMode`). Its
+`PermissionRequest` hook offers the prompt to the top bar and waits for an answer on a pipe,
+without using the CPU; Claude Code shows the same prompt in the terminal meanwhile, and the
+next hook of that chat (the prompt was answered there) ends the wait. `tests/test_needs.sh`
+and `TEST_ONLY=needs tests/shell/run.sh` check it all with a fake `claude`, fake lights and a
+throwaway GNOME Shell.
+
 ## The 5-hour window, and tokens
 
 A 5-hour window starts with the first message you send after the previous one has ended,
@@ -138,6 +196,9 @@ cd claude-account-switcher
 The installer also adds the `claude-busy` hooks to `~/.claude/settings.json` (your other
 settings and hooks stay as they are); Claude Code sessions started after that use them.
 
+On a ThinkPad, `pkexec ./install-lights.sh` once more for the lights (see
+[When Claude needs you](#when-claude-needs-you)); everything else works without it.
+
 If Claude Code is already logged in, the installer saves that login as account **1**
 (rename it with `claude-account rename 1 NAME`). Log out and back in once so GNOME loads the
 extension, then click **+** in the top bar to add your other account under any name.
@@ -158,7 +219,9 @@ From the terminal, `claude-account add NAME --private` does the same with the na
 | `claude-account history [NAME]` | Recent 5-hour windows, how high each went, and their tokens |
 | `claude-account auto-switch on\|off` | Switch accounts automatically at 100% (on by default) |
 | `claude-account keep-awake on\|off` | Keep the computer awake while Claude works (on by default) |
-| `claude-busy status` | Which Claude Code sessions are working right now |
+| `claude-account ask on\|off` | Permission prompts as notifications too (on by default) |
+| `claude-account lights on\|off` | Blink the ThinkPad lights (on by default, after `install-lights.sh`) |
+| `claude-busy status` | Which Claude Code chats are working or waiting for you |
 | `claude-account add NAME --private` | Sign in to an account in a private browser window |
 | `claude-account add NAME --current` | Save the login Claude Code is using right now |
 | `claude-account rename OLD NEW` | Rename an account |
@@ -183,7 +246,8 @@ and the token endpoint to renew an account that hasn't been used for a while.
 ```
 
 It removes the extension, `claude-account`, `claude-busy` and their Claude Code hooks, and
-leaves every other setting alone. Your saved logins stay in `~/.claude/accounts`; delete
+leaves every other setting alone. If you set up the lights, `pkexec ./uninstall-lights.sh`
+gives them back to the laptop. Your saved logins stay in `~/.claude/accounts`; delete
 that folder too to forget them.
 
 ## License

@@ -20,6 +20,8 @@ uses the new login on its next request, so the current chat just continues.
                                   with the most room left (on by default)
   claude-account keep-awake on|off    keep the computer awake while Claude works, lid closed
                                   too (claude-busy; on by default)
+  claude-account ask on|off           permission prompts as notifications too (on by default)
+  claude-account lights on|off        blink the ThinkPad lights (after install-lights.sh; on)
 """
 import datetime, fcntl, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 
@@ -39,7 +41,9 @@ HISTORY_EVERY = 600  # record an unchanged reading at most every 10 minutes
 LOCK = os.path.join(SLOTS, ".lock")
 # Options are on unless these files exist (the top bar's right-click menu toggles them).
 OPTION_OFF = {"auto-switch": os.path.join(SLOTS, "auto-switch-off"),
-              "keep-awake": os.path.join(SLOTS, "keep-awake-off")}
+              "keep-awake": os.path.join(SLOTS, "keep-awake-off"),
+              "ask": os.path.join(SLOTS, "ask-off"),
+              "lights": os.path.join(SLOTS, "lights-off")}
 WINDOW_JITTER = 600  # the API's reset time wobbles by a second or so between readings
 # Tokens per account (tokens.cache), from Claude Code's own transcripts on this computer, in 10-minute steps:
 # {"step": 600, "accounts": {name: {step start: [tokens, cache reads]}}}. "tokens" is input +

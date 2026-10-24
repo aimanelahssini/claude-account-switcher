@@ -22,16 +22,24 @@ for event in list(hooks):
     hooks[event] = [g for g in hooks[event] if not any('claude-busy' in h.get('command', '') for h in g.get('hooks', []))]
     if not hooks[event]:
         del hooks[event]
-def add(event, arg, matcher=None):
-    group = {'hooks': [{'type': 'command', 'command': f'~/.local/bin/claude-busy {arg}'}]}
+def add(event, arg, matcher=None, timeout=None):
+    hook = {'type': 'command', 'command': f'~/.local/bin/claude-busy {arg}'}
+    if timeout:
+        hook['timeout'] = timeout
+    group = {'hooks': [hook]}
     if matcher:
         group['matcher'] = matcher
     hooks.setdefault(event, []).append(group)
-for event in ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SubagentStart']:
+for event in ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied',
+              'PreCompact', 'SubagentStart']:
     add(event, 'busy')
 for event in ['Stop', 'StopFailure', 'SessionEnd']:
     add(event, 'idle')
 add('Notification', 'idle', 'idle_prompt')  # waiting for you (also after you stop it with Esc)
+add('Notification', 'needs', 'permission_prompt|elicitation_dialog')  # a prompt or question
+# A permission prompt, also offered as a notification; it waits (without CPU) for an answer
+# there until you answer in the terminal, so its time limit is a day.
+add('PermissionRequest', 'ask', timeout=86400)
 os.makedirs(os.path.dirname(path), exist_ok=True)
 tmp = path + '.tmp'
 with open(tmp, 'w') as f:

@@ -256,6 +256,126 @@ async function run() {
     out('DONE');
 }
 
+// TEST_ONLY=needs: a chat waiting for you, its permission prompt as a notification, the lights.
+async function needsTest() {
+    let ext;
+    for (let i = 0; i < 40 && !ext?._needsBox; i++) {
+        await sleep(500);
+        ext = Main.extensionManager.lookup(UUID)?.stateObj;
+    }
+    Main.overview.hide();
+    const home = GLib.get_home_dir();
+    const busy = `${GLib.get_user_runtime_dir()}/claude-busy`;
+    const leds = GLib.getenv('CLAUDE_BUSY_LEDS');
+    const write = (path, text) => GLib.file_set_contents(path, text);
+    const read = path => { try { return new TextDecoder().decode(GLib.file_get_contents(path)[1]); } catch { return ''; } };
+    const spawn = (...argv) => GLib.spawn_async(null, argv, null, GLib.SpawnFlags.SEARCH_PATH, null)[1];
+    const focused = () => global.display.focus_window?.get_title() ?? '';
+    const windowTitled = t => global.get_window_actors().map(a => a.meta_window).find(w => w.get_title() === t);
+    // Two windows: the chat's terminal (titled like Claude Code titles it) and another one.
+    spawn('python3', GLib.getenv('TEST_WINDOW'), '✳ Fix the poster upload');
+    for (let i = 0; i < 40 && !windowTitled('✳ Fix the poster upload'); i++) await sleep(250);
+    spawn('python3', GLib.getenv('TEST_WINDOW'), 'Something else');
+    for (let i = 0; i < 40 && !windowTitled('Something else'); i++) await sleep(250);
+    await sleep(800);
+    Main.activateWindow(windowTitled('Something else'));
+    await sleep(500);
+    check('needs: test windows open', !!windowTitled('✳ Fix the poster upload') && focused() === 'Something else', focused());
+
+    // A chat working, then waiting for you (claude-busy's files; the lights as claude-busy set them).
+    write(`${busy}/s1`, '\n');
+    write(`${busy}/.light-power`, 'needs\n');
+    write(`${busy}/.light-lid_logo_dot`, 'steady\n');
+    GLib.unlink(`${busy}/s1`);
+    write(`${busy}/needs/s1`, `\n${Math.floor(Date.now() / 1000)}\npermission\n/home/u/Projects/listr\n${home}/chat.jsonl\n`);
+    write(`${busy}/s2`, '\n');   // another chat keeps working meanwhile
+    await sleep(700);
+    check('needs: white dot and the chat name in the top bar', ext._needsBox.visible && ext._needsName.text.startsWith('Fix the poster'),
+        ext._needsName.text);
+    check('needs: comes before another chat working', !ext._spinner.visible && !ext._mascot.visible);
+    const opacities = new Set();
+    for (let i = 0; i < 25; i++) {
+        opacities.add(ext._needsDot.opacity);
+        await sleep(100);
+    }
+    check('needs: the dot blinks', opacities.has(255) && opacities.has(90), [...opacities].join());
+    check('needs: the power light is put in step', read(`${leds}/tpacpi::power/pattern`).startsWith('255 150 255 0'),
+        read(`${leds}/tpacpi::power/pattern`));
+    check('needs: the lid dot left alone (lid open)', read(`${leds}/tpacpi::lid_logo_dot/pattern`) === '');
+    ext._tag.hover = true;
+    await sleep(300);
+    check('needs: hover says where', ext._tooltip.text === 'Claude needs you in “Fix the poster upload”. Click to open it', ext._tooltip.text);
+    ext._tag.hover = false;
+    await shot('needs', ext);
+    ext._tag.emit('clicked', 1);
+    await sleep(800);
+    check('needs: click opens that chat', focused() === '✳ Fix the poster upload', focused());
+
+    // Its permission prompt as a notification, while you're elsewhere.
+    Main.activateWindow(windowTitled('Something else'));
+    await sleep(500);
+    GLib.spawn_command_line_sync(`mkfifo ${busy}/ask/s1.fifo`);
+    write(`${busy}/ask/s1.pid`, '1\n');
+    spawn('sh', '-c', `cat ${busy}/ask/s1.fifo > ${busy}/answer.txt`);
+    const request = {session_id: 's1', cwd: '/home/u/Projects/listr', transcript_path: `${home}/chat.jsonl`,
+        hook_event_name: 'PermissionRequest', tool_name: 'Bash',
+        tool_input: {command: 'rm -f pezei.py', description: 'Delete pezei.py'},
+        permission_suggestions: [{type: 'addRules', rules: [{toolName: 'Bash', ruleContent: 'rm -f pezei.py'}],
+            behavior: 'allow', destination: 'localSettings'}, {type: 'setMode', mode: 'acceptEdits', destination: 'session'}]};
+    write(`${busy}/ask/s1.json`, JSON.stringify(request));
+    await sleep(800);
+    const n = ext._asks.get('s1');
+    check('notify: shown', !!n);
+    check('notify: project as title', n?.title === 'listr', n?.title);
+    check('notify: the request in plain words', n?.body === 'Delete pezei.py? — $ rm -f pezei.py', JSON.stringify(n?.body));
+    check('notify: opens expanded, buttons showing', Main.messageTray._banner?.expanded === true);
+    check('notify: Yes, Always, No', n?.actions.map(a => a.label).join() === 'Yes,Always,No', n?.actions.map(a => a.label).join());
+    const shotStream = Gio.File.new_for_path(`${OUT}/notification.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
+    await new Shell.Screenshot().screenshot_area(global.stage.width / 2 - 260, 0, 520, 200, shotStream);
+    shotStream.close(null);
+    n.actions.find(a => a.label === 'Always').activate();
+    await sleep(1200);
+    const answer = read(`${busy}/answer.txt`);
+    check('notify: Always answers Claude Code, with the suggested rule',
+        /"behavior":"allow"/.test(answer) && /"ruleContent":"rm -f pezei.py"/.test(answer) && !/setMode/.test(answer), answer.trim());
+    // claude-busy then removes the prompt's files.
+    for (const f of ['s1.json', 's1.fifo', 's1.pid'])
+        GLib.unlink(`${busy}/ask/${f}`);
+    await sleep(600);
+    check('notify: gone once answered', !ext._asks.has('s1'));
+
+    // Answered in the terminal instead: the notification goes away by itself.
+    write(`${busy}/ask/s2.json`, JSON.stringify({...request, session_id: 's2', tool_input: {command: 'ls'}}));
+    await sleep(600);
+    const n2 = ext._asks.get('s2');
+    GLib.unlink(`${busy}/ask/s2.json`);
+    await sleep(600);
+    check('notify: withdrawn when answered elsewhere', !!n2 && !ext._asks.has('s2'));
+    // No notification for the chat you're looking at: its prompt is right there.
+    Main.activateWindow(windowTitled('✳ Fix the poster upload'));
+    await sleep(500);
+    write(`${busy}/ask/s1.json`, JSON.stringify(request));
+    await sleep(600);
+    check('notify: not for the chat in front of you', !ext._asks.has('s1'),
+        `focused "${focused()}", chat window "${ext._chatWindow({id: 's1', transcript: `${home}/chat.jsonl`, cwd: '/home/u/Projects/listr'})?.get_title()}"`);
+
+    // Answered: back to the spinner (the other chat still works).
+    GLib.unlink(`${busy}/needs/s1`);
+    await sleep(600);
+    check('needs: answered, the spinner again', !ext._needsBox.visible && ext._spinner.visible);
+
+    // The menu's new switches.
+    ext._tag.emit('clicked', 3);
+    await sleep(700);
+    const items = ext._options._getMenuItems().filter(i => i._switch);
+    check('menu: notifications and lights switches', items.map(i => i.label.text).join(' | ').includes('Permission prompts as notifications | Blink the ThinkPad lights'),
+        items.map(i => i.label.text).join(' | '));
+    check('menu: on by default', items.every(i => i.state));
+    await shot('options', ext, false, ext._options.actor);
+    ext._options.close();
+    out('DONE');
+}
+
 // TEST_ONLY=tokens-panel: just the history panel in tokens.
 async function tokensPanel() {
     let ext;
@@ -283,7 +403,7 @@ async function tokensPanel() {
 export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            (GLib.getenv("TEST_ONLY") === "tokens-panel" ? tokensPanel() : run()).catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
+            ({'tokens-panel': tokensPanel, needs: needsTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => global.context.terminate());
             });
             return GLib.SOURCE_REMOVE;

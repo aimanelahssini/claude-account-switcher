@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- Claude Code's mascot, from its terminal art: quarter-character cells, twice as tall as wide -->
+  <g transform="translate(0 12)" fill="#d77757">
+    <rect x="8" y="0" width="48" height="32"/>
+    <rect x="0" y="16" width="64" height="8"/>
+    <rect x="12" y="32" width="4" height="8"/><rect x="20" y="32" width="4" height="8"/>
+    <rect x="40" y="32" width="4" height="8"/><rect x="48" y="32" width="4" height="8"/>
+  </g>
+  <g transform="translate(0 12)" fill="#1e1e1e">
+    <rect x="16" y="8" width="4" height="8"/><rect x="44" y="8" width="4" height="8"/>
+  </g>
+</svg>

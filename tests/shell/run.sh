@@ -3,6 +3,7 @@
 # accounts and usage. Settings go to a keyfile in a temp folder, never to the real dconf.
 #   tests/shell/run.sh [OUT_DIR]     results.txt, screenshots and breath frames land in OUT_DIR
 #   TEST_ONLY=tokens-panel run.sh    only the history panel in tokens
+#   TEST_ONLY=needs run.sh           only "Claude needs you": top bar, click, notifications, lights
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
@@ -18,6 +19,13 @@ echo 1 > "$A/active"
 echo '{}' > "$A/1.json"
 echo '{}' > "$A/2.json"
 python3 "$HERE/fake-history.py" "$A/history.jsonl"
+# Stand-in ThinkPad lights, claude-busy where the extension calls it, and a chat transcript.
+for led in lid_logo_dot power; do
+    mkdir -p "$T/leds/tpacpi::$led"
+    touch "$T/leds/tpacpi::$led/pattern" "$T/leds/tpacpi::$led/repeat"
+done
+install -Dm755 "$REPO/claude-busy" "$T/home/.local/bin/claude-busy"
+echo '{"type":"summary","aiTitle":"Fix the poster upload"}' > "$T/home/chat.jsonl"
 echo '{"spinnerVerbs": {"mode": "replace", "verbs": ["Choreographing"]}}' > "$T/home/.claude/settings.json"
 RESET="$(date -u -d '+72 min' +%Y-%m-%dT%H:%M:%SZ)"
 echo "{\"1\": {\"pct\": 53, \"resets_at\": \"$RESET\"}, \"2\": {\"pct\": 11, \"resets_at\": \"$RESET\"}}" > "$A/usage.cache"
@@ -36,6 +44,7 @@ dconf dump / > "$T/dconf-before.txt"
 env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
     HOME="$T/home" XDG_CONFIG_HOME="$T/config" XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state" \
     XDG_CACHE_HOME="$T/cache" XDG_RUNTIME_DIR="$T/rt" GSETTINGS_BACKEND=keyfile TEST_OUT="$OUT" TEST_ONLY="${TEST_ONLY:-}" \
+    CLAUDE_BUSY_LEDS="$T/leds" TEST_WINDOW="$HERE/window.py" \
     dbus-run-session -- timeout 120 gnome-shell --headless --wayland --virtual-monitor 1440x900 \
     > "$OUT/shell.log" 2>&1 || true
 dconf dump / > "$T/dconf-after.txt"
