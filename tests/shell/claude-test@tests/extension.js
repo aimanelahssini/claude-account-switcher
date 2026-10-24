@@ -257,6 +257,40 @@ async function run() {
     out('DONE');
 }
 
+// TEST_ONLY=edge: the top bar's buttons answer to the pointer over the bar's full height (the
+// very top pixel row included), while drawn the same as before.
+async function edgeTest() {
+    let ext;
+    for (let i = 0; i < 40 && !ext?._buttons?.length; i++) {
+        await sleep(500);
+        ext = Main.extensionManager.lookup(UUID)?.stateObj;
+    }
+    Main.overview.hide();
+    await sleep(1000);
+    const [, panelY] = Main.panel.get_transformed_position();
+    const panelBottom = panelY + Main.panel.height - 1;
+    const items = [['mascot', ext._tag], ...ext._buttons.map(b => [`account ${b._slot}`, b]), ['+', ext._addBtn]];
+    for (const [name, b] of items) {
+        const [x, y] = b.get_transformed_position();
+        const cx = Math.round(x + b.width / 2);
+        const top = global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, cx, panelY);
+        const bottom = global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, cx, panelBottom);
+        out(`# ${name}: drawn ${b.width}x${b.height} at y ${y}, bar ${panelY}..${panelBottom}`);
+        check(`edge: ${name} at the very top`, top === b || b.contains(top), top?.toString());
+        check(`edge: ${name} at the bottom of the bar`, bottom === b || b.contains(bottom), bottom?.toString());
+    }
+    // Hovering there works like hovering the button.
+    const pointer = Clutter.get_default_backend().get_default_seat().create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+    const b = ext._buttons[0];
+    const [bx] = b.get_transformed_position();
+    pointer.notify_absolute_motion(GLib.get_monotonic_time(), bx + b.width / 2, panelY);
+    await sleep(700);
+    check('edge: hover at the top edge shows its hover text', b.hover && ext._tip.visible, ext._tooltip.text);
+    pointer.notify_absolute_motion(GLib.get_monotonic_time(), 5, 500);
+    await sleep(500);
+    out('DONE');
+}
+
 // TEST_ONLY=tabs: the row of chats under the mascot's hover text, in tab order. Two desktops:
 // on the first a window on the left with two tabs and one on the right with one tab; on the
 // second a window with one tab. claude-tabs is a stand-in here (no accessibility bus).
@@ -518,7 +552,7 @@ async function tokensPanel() {
 export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
+            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => global.context.terminate());
             });
             return GLib.SOURCE_REMOVE;

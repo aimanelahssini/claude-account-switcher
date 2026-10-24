@@ -1,5 +1,6 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -155,6 +156,40 @@ function dayName(d) {
     return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : d.format('%a %e %b');
 }
 
+// A top-bar button that answers to the pointer over the bar's whole height, so a pointer pushed
+// up against the screen's edge (or down to the bar's bottom) still counts as on it. It's drawn
+// exactly as before: only where it can be pointed at grows.
+const TallButton = GObject.registerClass(
+class TallButton extends St.Button {
+    // [top, bottom] of the bar in this button's coordinates.
+    _barSpan() {
+        const [, panelY] = Main.panel.get_transformed_position();
+        const [, y] = this.get_transformed_position();
+        return [Math.min(0, panelY - y), Math.max(this.height, panelY + Main.panel.height - y)];
+    }
+
+    vfunc_pick(context) {
+        super.vfunc_pick(context);
+        if (!this.reactive || !this.mapped)
+            return;
+        const [top, bottom] = this._barSpan();
+        this.pick_box(context, new Clutter.ActorBox({x1: 0, y1: top, x2: this.width, y2: bottom}));
+    }
+
+    // Clutter only looks for the pointer where an actor paints; this one "paints" the bar's
+    // height (nothing more is drawn: the box only covers where it can be pointed at).
+    vfunc_get_paint_volume(volume) {
+        if (!super.vfunc_get_paint_volume(volume))
+            return false;
+        const [top, bottom] = this._barSpan();
+        const origin = volume.get_origin();
+        origin.y = Math.min(origin.y, top);
+        volume.set_origin(origin);
+        volume.set_height(Math.max(volume.get_height(), bottom - origin.y));
+        return true;
+    }
+});
+
 function label(n) {
     return n === '-' ? '−' : n;
 }
@@ -241,7 +276,7 @@ export default class ClaudeAccountExtension extends Extension {
         // blinking dot with the chat's name while a chat waits for you (click: open that chat).
         // Click or right-click: the options menu.
         const tagBox = new St.BoxLayout({style_class: 'claude-acct-tag-box'});
-        this._tag = new St.Button({style_class: 'claude-acct-btn claude-acct-tag', child: tagBox,
+        this._tag = new TallButton({style_class: 'claude-acct-btn claude-acct-tag', child: tagBox,
             y_align: Clutter.ActorAlign.CENTER, button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE});
         this._tag.connect('clicked', (btn, mouse) => {
             if (this._needs?.length && mouse !== 3)
@@ -271,7 +306,7 @@ export default class ClaudeAccountExtension extends Extension {
         this._box.add_child(this._tag);
         this._indicator.add_child(this._box);
         this._buttons = [];
-        this._addBtn = new St.Button({label: '+', style_class: 'claude-acct-btn claude-acct-add',
+        this._addBtn = new TallButton({label: '+', style_class: 'claude-acct-btn claude-acct-add',
             y_align: Clutter.ActorAlign.CENTER});
         this._addBtn.connect('clicked', () => this._askNewAccount());
         this._addBtn.connect('notify::hover', () => this._showTooltip(this._addBtn));
@@ -785,7 +820,7 @@ export default class ClaudeAccountExtension extends Extension {
     }
 
     _makeButton(n) {
-        const b = new St.Button({style_class: 'claude-acct-btn', y_align: Clutter.ActorAlign.CENTER,
+        const b = new TallButton({style_class: 'claude-acct-btn', y_align: Clutter.ActorAlign.CENTER,
             button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE});
         const inner = new St.BoxLayout({style_class: 'claude-acct-inner', vertical: true,
             y_align: Clutter.ActorAlign.CENTER});

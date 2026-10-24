@@ -5,6 +5,7 @@
 #   TEST_ONLY=tokens-panel run.sh    only the history panel in tokens
 #   TEST_ONLY=needs run.sh           only "Claude needs you": top bar, click, notifications, lights
 #   TEST_ONLY=tabs run.sh            only the row of chats under the mascot's hover text
+#   TEST_ONLY=edge run.sh            only: the top bar buttons answer up to the screen edge
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
