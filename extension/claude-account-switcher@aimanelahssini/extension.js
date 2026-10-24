@@ -572,10 +572,15 @@ export default class ClaudeAccountExtension extends Extension {
         const tokens = readTokens();
         const win = this._window(n);
         const pct = this._pct(n);
-        const winTokens = win && !win.ended ? tokensBetween(tokens, n, win.end - 5 * HOUR, win.end) : 0;
+        const now = Date.now() / 1000;
+        const firstHour = Math.floor(now / HOUR) * HOUR - 23 * HOUR;
+        const hours = hourlyUse(hist.filter(e => e.t >= firstHour - 6 * HOUR), firstHour);
+        const hourTokens = hours.map((_, i) => tokensBetween(tokens, n, firstHour + i * HOUR, firstHour + (i + 1) * HOUR));
+        const totalTokens = hourTokens.reduce((a, b) => a + b, 0);
+        // In tokens the window that's running is the Now row below, so the header shows the day.
         let current;
         if (inTokens)
-            current = winTokens ? `${short(winTokens)} tokens in this 5-hour window` : 'No tokens in this 5-hour window yet';
+            current = totalTokens ? `${short(totalTokens)} tokens in the last 24 hours` : 'No tokens in the last 24 hours';
         else
             current = typeof pct === 'number' ? `${Math.round(pct)}% of the 5-hour limit` : 'Usage unknown';
         box.add_child(new St.Label({text: current, style_class: 'claude-acct-history-now'}));
@@ -583,18 +588,20 @@ export default class ClaudeAccountExtension extends Extension {
 
         // Chart: what each of the last 24 hours used, hover a bar for its numbers
         box.add_child(new St.Label({text: 'Last 24 hours', style_class: 'claude-acct-history-title'}));
-        const now = Date.now() / 1000;
-        const firstHour = Math.floor(now / HOUR) * HOUR - 23 * HOUR;
-        const hours = hourlyUse(hist.filter(e => e.t >= firstHour - 6 * HOUR), firstHour);
         const chart = new St.DrawingArea({style_class: 'claude-acct-chart', width: 320, height: 84,
             reactive: true, track_hover: true});
         const detail = new St.Label({style_class: 'claude-acct-chart-detail'});
-        const hourTokens = hours.map((_, i) => tokensBetween(tokens, n, firstHour + i * HOUR, firstHour + (i + 1) * HOUR));
         const total = Math.round(hours.reduce((a, b) => a + b, 0));
-        const totalTokens = hourTokens.reduce((a, b) => a + b, 0);
+        const busiest = hourTokens.indexOf(Math.max(...hourTokens));
+        const hourName = i => {
+            const from = GLib.DateTime.new_from_unix_local(firstHour + i * HOUR);
+            return `${from.format('%H:00')}–${from.add_hours(1).format('%H:00')}`;
+        };
         const summary = () => {
+            // The day's total is in the header already; under the chart, its busiest hour.
             if (inTokens)
-                detail.text = totalTokens ? `${short(totalTokens)} tokens in the last 24 hours` : 'No tokens in the last 24 hours';
+                detail.text = totalTokens ? `Busiest hour ${hourName(busiest)}  ·  ${short(hourTokens[busiest])} tokens`
+                    : 'Hover a bar for its hour';
             else
                 detail.text = total ? `${total}% of the limit used in the last 24 hours` : 'Nothing used in the last 24 hours';
         };
@@ -606,8 +613,7 @@ export default class ClaudeAccountExtension extends Extension {
             const i = Math.max(0, Math.min(23, Math.floor(x / area.width * 24)));
             if (i !== area._hovered) {
                 area._hovered = i;
-                const from = GLib.DateTime.new_from_unix_local(firstHour + i * HOUR);
-                detail.text = `${from.format('%H:00')}–${from.add_hours(1).format('%H:00')}  ·  ` +
+                detail.text = `${hourName(i)}  ·  ` +
                     (inTokens ? `${short(hourTokens[i])} tokens` : `${Math.round(hours[i])}% used`);
                 area.queue_repaint();
             }

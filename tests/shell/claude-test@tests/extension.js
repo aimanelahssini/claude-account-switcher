@@ -225,8 +225,8 @@ async function run() {
     check('tokens: per window', rows.length === 3 && rows.every(r => /^[\d.]+[kM]$/.test(r.get_children().at(-1).text)), rowTexts().join(' | '));
     check('tokens: switch shows it', find('claude-acct-unit-btn').find(btn => btn.label === 'Tokens').checked);
     detail = find('claude-acct-chart-detail')[0];
-    check('tokens: chart', /^[\d.]+[kM] tokens in the last 24 hours$/.test(detail.text), detail.text);
-    check('tokens: header', /tokens in this 5-hour window$/.test(find('claude-acct-history-now')[0].text), find('claude-acct-history-now')[0].text);
+    check('tokens: busiest hour under the chart', /^Busiest hour \d\d:00–\d\d:00  ·  [\d.]+[kM] tokens$/.test(detail.text), detail.text);
+    check('tokens: header is the last 24 hours', /^[\d.]+[kM] tokens in the last 24 hours$/.test(find('claude-acct-history-now')[0].text), find('claude-acct-history-now')[0].text);
     await shot('history-tokens', ext, false, b1._menu.actor);
     b1._menu.close();
     await sleep(400);
@@ -256,10 +256,34 @@ async function run() {
     out('DONE');
 }
 
+// TEST_ONLY=tokens-panel: just the history panel in tokens.
+async function tokensPanel() {
+    let ext;
+    for (let i = 0; i < 40 && !ext?._buttons?.length; i++) {
+        await sleep(500);
+        ext = Main.extensionManager.lookup(UUID)?.stateObj;
+    }
+    Main.overview.hide();
+    await sleep(1000);
+    const accounts = `${GLib.get_home_dir()}/.claude/accounts`;
+    GLib.file_set_contents(`${accounts}/.panel-unit`, 'tokens\n');
+    const b1 = ext._buttons.find(b => b._slot === '1');
+    ext._toggleHistory(b1);
+    await sleep(800);
+    const all = a => [a, ...a.get_children().flatMap(all)];
+    const find = cls => all(b1._menu.box).filter(c => c.has_style_class_name?.(cls));
+    const header = find('claude-acct-history-now')[0].text, detail = find('claude-acct-chart-detail')[0].text;
+    check('tokens: header is the last 24 hours', /^[\d.]+[kM] tokens in the last 24 hours$/.test(header), header);
+    check('tokens: busiest hour under the chart', /^Busiest hour \d\d:00–\d\d:00  ·  [\d.]+[kM] tokens$/.test(detail), detail);
+    check('tokens: Now row keeps the 5-hour window', /^Now .* [\d.]+[kM]$/.test(find('claude-acct-window')[0].get_children().map(c => c.text).filter(Boolean).join(' ')));
+    await shot('history-tokens', ext, false, b1._menu.actor);
+    out('DONE');
+}
+
 export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            run().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
+            (GLib.getenv("TEST_ONLY") === "tokens-panel" ? tokensPanel() : run()).catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => global.context.terminate());
             });
             return GLib.SOURCE_REMOVE;

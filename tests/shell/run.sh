@@ -2,6 +2,7 @@
 # Runs the extension with a test driver in a throwaway headless GNOME Shell, with made-up
 # accounts and usage. Settings go to a keyfile in a temp folder, never to the real dconf.
 #   tests/shell/run.sh [OUT_DIR]     results.txt, screenshots and breath frames land in OUT_DIR
+#   TEST_ONLY=tokens-panel run.sh    only the history panel in tokens
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
@@ -34,7 +35,7 @@ KEYS
 dconf dump / > "$T/dconf-before.txt"
 env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
     HOME="$T/home" XDG_CONFIG_HOME="$T/config" XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state" \
-    XDG_CACHE_HOME="$T/cache" XDG_RUNTIME_DIR="$T/rt" GSETTINGS_BACKEND=keyfile TEST_OUT="$OUT" \
+    XDG_CACHE_HOME="$T/cache" XDG_RUNTIME_DIR="$T/rt" GSETTINGS_BACKEND=keyfile TEST_OUT="$OUT" TEST_ONLY="${TEST_ONLY:-}" \
     dbus-run-session -- timeout 120 gnome-shell --headless --wayland --virtual-monitor 1440x900 \
     > "$OUT/shell.log" 2>&1 || true
 dconf dump / > "$T/dconf-after.txt"

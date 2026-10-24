@@ -35,7 +35,7 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
   Claude is done, then does what closing the lid normally does.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
-<p align="center"><img src="docs/history.png" width="380" alt="History panel in percent: 53% of the 5-hour limit, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak"> <img src="docs/history-tokens.png" width="380" alt="The same panel switched to tokens: 2.3M tokens in this 5-hour window, hourly bars in tokens, and tokens per window"></p>
+<p align="center"><img src="docs/history.png" width="380" alt="History panel in percent: 53% of the 5-hour limit, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak"> <img src="docs/history-tokens.png" width="380" alt="The same panel switched to tokens: 13M tokens in the last 24 hours, hourly bars in tokens with the busiest hour, and tokens per window"></p>
 
 ## Options
 
