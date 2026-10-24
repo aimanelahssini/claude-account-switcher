@@ -359,6 +359,22 @@ async function tabsTest() {
     await new Shell.Screenshot().screenshot_area(Math.min(ix, tx) - 12, 0, Math.max(ix + ext._indicator.width, tx + tw) - Math.min(ix, tx) + 24, ty + th + 12, stream);
     stream.close(null);
     check('tabs: rounded rectangles you can click', rects.every(r => r instanceof St.Button && r.reactive));
+    // Hovering bar after bar: the box and the bars stay put (names of different lengths used to
+    // resize the box and slide the bars under the pointer).
+    const layout = () => JSON.stringify([ext._tip.x, ext._tip.width, ...rects.map(r => r.get_transformed_position()[0])]);
+    const still = layout();
+    let moved = '';
+    for (const r of [...rects, ...rects.slice().reverse()]) {
+        r.hover = true;
+        await sleep(120);
+        if (layout() !== still)
+            moved ||= `${ext._tooltip.text}: ${layout()} vs ${still}`;
+        r.hover = false;
+    }
+    check('tabs: hovering bars doesn\'t move them', !moved, moved);
+    const [tipX] = ext._tip.get_transformed_position();
+    const mon = Main.layoutManager.primaryMonitor;
+    check('tabs: the box stays on the screen', tipX >= mon.x && tipX + ext._tip.width <= mon.x + mon.width);
     // Moving from the mascot onto the box keeps it open.
     ext._tag.hover = false;
     ext._tip.hover = true;

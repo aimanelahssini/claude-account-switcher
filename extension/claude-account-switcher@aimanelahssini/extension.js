@@ -33,6 +33,7 @@ const LED_PATTERNS = {
 };
 const REALIGN_MS = 30000;
 const NAME_CHARS = 20;
+const MAX_TIP_WIDTH = 460;   // longer chat names in the mascot's box end in "…"
 const TITLE_TAIL = 512 * 1024;  // bytes at the end of a chat's transcript searched for its title
 // Claude Code's spinner, as it looks in a terminal on Linux: the glyph runs forward then back,
 // and a three-letter glimmer sweeps over the word. One light timer drives both.
@@ -189,6 +190,11 @@ class TallButton extends St.Button {
         return true;
     }
 });
+
+// What hovering a chat's bar says.
+function barText(chat) {
+    return `${chat.title} · ${{idle: 'idle', working: 'working', needs: 'needs you'}[chat.state]}`;
+}
 
 function label(n) {
     return n === '-' ? '−' : n;
@@ -1247,6 +1253,8 @@ export default class ClaudeAccountExtension extends Extension {
         else
             this._tooltip.text = this._signedIn.has(b._slot)
                 ? this._resetText(b._slot) : 'Not signed in. Click to sign in.';
+        if (b !== this._tag)
+            this._tooltip.width = -1;   // the other buttons' hover text fits its own width
         this._tipFor = b;
         this._showTabs(b === this._tag);
         this._tip.show();
@@ -1257,7 +1265,10 @@ export default class ClaudeAccountExtension extends Extension {
         const [x, y] = b.get_transformed_position();
         const [w, h] = b.get_transformed_size();
         const [, tw] = this._tip.get_preferred_width(-1);
-        this._tip.set_position(Math.round(x + w / 2 - tw / 2), Math.round(y + h + 6));
+        // Centred under the button, but kept on the screen.
+        const monitor = Main.layoutManager.findMonitorForActor(b) ?? Main.layoutManager.primaryMonitor;
+        const left = Math.max(monitor.x + 4, Math.min(x + w / 2 - tw / 2, monitor.x + monitor.width - tw - 4));
+        this._tip.set_position(Math.round(left), Math.round(y + h + 6));
     }
 
     // ---- your chats, under the mascot's hover text ------------------------------------
@@ -1360,14 +1371,14 @@ export default class ClaudeAccountExtension extends Extension {
                 bar._chat = c;
                 // Hovering a bar names its chat in the text above.
                 bar.connect('notify::hover', () => {
-                    const state = {idle: 'idle', working: 'working', needs: 'needs you'}[c.state];
-                    this._tooltip.text = bar.hover ? `${c.title} · ${state}` : this._tagText();
+                    this._tooltip.text = bar.hover ? barText(c) : this._tagText();
                 });
                 bar.connect('clicked', () => this._openTab(c));
                 this._tabsRow.add_child(bar);
             }
         }
         this._tabsRow.visible = chats.length > 0;
+        this._fitTagText(chats);
         // Orange ones breathe while the box is open.
         for (const r of this._tabsRow.get_children()) {
             r.remove_all_transitions();
@@ -1377,6 +1388,22 @@ export default class ClaudeAccountExtension extends Extension {
         }
         if (this._tip.visible)
             this._placeTip(this._tag);
+    }
+
+    // The mascot's box keeps one width while it's open: as wide as the longest text it can show
+    // (its line, or any chat's name). Hovering a bar only swaps the text, so the bars never move
+    // under the pointer.
+    _fitTagText(chats) {
+        const label = this._tooltip;
+        const shown = label.text;
+        label.width = -1;
+        let widest = 0;
+        for (const text of [this._tagText(), ...chats.map(barText)]) {
+            label.text = text;
+            widest = Math.max(widest, label.get_preferred_width(-1)[1]);
+        }
+        label.text = shown;
+        label.width = Math.min(widest, MAX_TIP_WIDTH * St.ThemeContext.get_for_stage(global.stage).scale_factor);
     }
 
     _run(args, onDone) {
