@@ -5,6 +5,7 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Shell from 'gi://Shell';
+import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -323,8 +324,44 @@ async function tabsTest() {
     const [ix] = ext._indicator.get_transformed_position();
     await new Shell.Screenshot().screenshot_area(Math.min(ix, tx) - 12, 0, Math.max(ix + ext._indicator.width, tx + tw) - Math.min(ix, tx) + 24, ty + th + 12, stream);
     stream.close(null);
+    check('tabs: rounded rectangles you can click', rects.every(r => r instanceof St.Button && r.reactive));
+    // Moving from the mascot onto the box keeps it open.
     ext._tag.hover = false;
-    await sleep(300);
+    ext._tip.hover = true;
+    await sleep(600);
+    check('tabs: the box stays while the pointer is on it', ext._tip.visible);
+    rects[2].hover = true;
+    await sleep(100);
+    check('tabs: hovering a bar names its chat', ext._tooltip.text === 'Charlie · needs you', ext._tooltip.text);
+    rects[2].hover = false;
+    // Click the first: its window comes forward and the terminal's own shortcut picks its tab.
+    const focused = () => global.display.focus_window?.get_title() ?? '';
+    Main.activateWindow(windowTitled('✳ Charlie — claude'));
+    await sleep(400);
+    rects[0].emit('clicked', 1);
+    await sleep(450);
+    check('tabs: click goes to that chat\'s window', focused() === '✳ Bravo — claude', focused());
+    const accel = new Gio.Settings({schema_id: 'org.gnome.Ptyxis.Shortcuts'}).get_string('focus-tab-1');
+    check('tabs: and to its tab, with the terminal\'s shortcut', !!ext._pressed?.length, `${accel} -> ${ext._pressed}`);
+    check('tabs: an orange frame shows around it', !!ext._flashActor && ext._flashActor.opacity > 0 &&
+        Math.abs(ext._flashActor.x - (windowTitled('✳ Bravo — claude').get_frame_rect().x - 3)) <= 1);
+    check('tabs: the box closes', !ext._tip.visible);
+    await shot('flash', ext);
+    const fs = Gio.File.new_for_path(`${OUT}/flash-window.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
+    const fr = windowTitled('✳ Bravo — claude').get_frame_rect();
+    await new Shell.Screenshot().screenshot_area(Math.max(0, fr.x - 20), Math.max(0, fr.y - 20), fr.width + 40, fr.height + 40, fs);
+    fs.close(null);
+    await sleep(1800);
+    check('tabs: then fades away', !ext._flashActor);
+    // A chat on the other desktop: it goes there.
+    ext._tag.hover = true;
+    await sleep(500);
+    ext._tabsRow.get_children()[3].emit('clicked', 1);
+    await sleep(700);
+    check('tabs: a chat on another desktop: that desktop', focused() === '✳ Delta — claude' &&
+        global.workspace_manager.get_active_workspace_index() === 1, focused());
+    ext._tag.hover = false;
+    await sleep(500);
     check('tabs: animation stops with the box', rects.every(r => !r.get_transition('opacity')) && !ext._tabsRow.visible);
     // Not under an account's hover text.
     ext._buttons[0].hover = true;

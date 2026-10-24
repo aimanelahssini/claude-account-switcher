@@ -113,12 +113,15 @@ When a chat stops for a permission prompt, a question or a plan to approve:
   front, on whatever desktop it's on; right-click for the menu. With several chats waiting it
   says **2 chats**, and a click opens the one that has waited longest. Hover for their names.
 - **Your chats at a glance:** hover the mascot (or the spinner, or the dot) and under the text
-  there's a row of small rounded bars, one per Claude chat, in the order of your terminal
+  there's a row of rounded rectangles, one per Claude chat, in the order of your terminal
   tabs: desktop by desktop, windows left to right, then each window's tabs. **Grey** is idle,
-  **orange** (breathing) is working, **white** is waiting for you. `claude-tabs` reads the
-  terminals' tabs through the accessibility bus (as screen readers do), only while you hover.
+  **orange** (breathing) is working, **white** is waiting for you. Hover one for its chat's
+  name; **click** it to go there: its desktop, its window, and its tab (with the terminal's own
+  "go to tab" shortcut), and an orange frame flashes around the window so you see where you
+  landed. `claude-tabs` reads the terminals' tabs through the accessibility bus (as screen
+  readers do), only while you hover.
 
-<p align="center"><img src="docs/tabs.png" width="376" alt="Hover box under the top bar: Claude needs you in Charlie, click to open it, and below it four small rounded bars: grey, orange, white, grey"></p>
+<p align="center"><img src="docs/tabs.png" width="376" alt="Hover box under the top bar: Claude needs you in Charlie, click to open it, and below it four rounded rectangles: grey, orange, white, grey"></p>
 
 - **Notification**, for permission prompts: the project as its title, the request in plain
   words and the exact command, and **Yes**, **Always** (when Claude Code offers "don't ask

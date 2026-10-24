@@ -277,7 +277,12 @@ export default class ClaudeAccountExtension extends Extension {
         this._addBtn.connect('notify::hover', () => this._showTooltip(this._addBtn));
         this._box.add_child(this._addBtn);
         // The hover box: a line of text, and for the mascot a row of your Claude chats.
-        this._tip = new St.BoxLayout({style_class: 'claude-acct-tooltip', vertical: true, visible: false});
+        this._tip = new St.BoxLayout({style_class: 'claude-acct-tooltip', vertical: true, visible: false,
+            reactive: true, track_hover: true});
+        this._tip.connect('notify::hover', () => {
+            if (!this._tip.hover && this._tipFor === this._tag)
+                this._showTooltip(this._tag);
+        });
         this._tooltip = new St.Label({style_class: 'claude-acct-tooltip-text'});
         this._tabsRow = new St.BoxLayout({style_class: 'claude-acct-tabs', x_align: Clutter.ActorAlign.CENTER,
             visible: false});
@@ -348,6 +353,11 @@ export default class ClaudeAccountExtension extends Extension {
         this._indicator?.destroy();
         this._indicator = null;
         this._tabsCancel?.cancel();
+        if (this._tipTimer)
+            GLib.source_remove(this._tipTimer);
+        this._tipTimer = null;
+        this._flashActor?.destroy();
+        this._flashActor = null;
         this._tip?.destroy();
         this._tip = null;
         this._tooltip = null;
@@ -457,9 +467,78 @@ export default class ClaudeAccountExtension extends Extension {
 
     _openChat(entry) {
         const win = this._chatWindow(entry);
-        if (win)
+        if (win) {
             Main.activateWindow(win);
-        this._tip.hide();
+            this._flash(win);
+        }
+        this._hideTip();
+    }
+
+    // A bar's chat: its window to the front, and its tab when the window has several.
+    _openTab(chat) {
+        const win = chat.window && global.get_window_actors().map(a => a.meta_window)
+            .find(m => (m.get_title() ?? '').trim() === chat.window);
+        if (!win) {
+            this._openChat(chat);
+            return;
+        }
+        Main.activateWindow(win);
+        // The tab isn't the one showing: press the terminal's own "go to tab N" shortcut.
+        if (chat.tabCount > 1 && chat.tab !== chat.window) {
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => {
+                if (global.display.focus_window === win)
+                    this._pressTabShortcut(chat.tabIndex + 1);
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+        this._flash(win);
+        this._hideTip();
+    }
+
+    // Ptyxis's focus-tab-N shortcut, as set in its preferences (e.g. Ctrl+& on AZERTY).
+    _pressTabShortcut(n) {
+        const source = Gio.SettingsSchemaSource.get_default();
+        if (n > 10 || !source.lookup('org.gnome.Ptyxis.Shortcuts', true))
+            return;
+        const accel = new Gio.Settings({schema_id: 'org.gnome.Ptyxis.Shortcuts'}).get_string(`focus-tab-${n}`);
+        const mods = {ctrl: Clutter.KEY_Control_L, control: Clutter.KEY_Control_L, primary: Clutter.KEY_Control_L,
+            alt: Clutter.KEY_Alt_L, shift: Clutter.KEY_Shift_L, super: Clutter.KEY_Super_L};
+        const keys = [...accel.matchAll(/<(\w+)>/g)].map(m => mods[m[1].toLowerCase()]).filter(Boolean);
+        const key = Clutter[`KEY_${accel.replace(/<\w+>/g, '')}`];
+        if (!key)
+            return;
+        this._pressed = [...keys, key];   // tests read it
+        this._keyboard ??= Clutter.get_default_backend().get_default_seat()
+            .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
+        const time = () => GLib.get_monotonic_time();
+        for (const k of this._pressed)
+            this._keyboard.notify_keyval(time(), k, Clutter.KeyState.PRESSED);
+        for (const k of [...this._pressed].reverse())
+            this._keyboard.notify_keyval(time(), k, Clutter.KeyState.RELEASED);
+    }
+
+    // An orange frame around the window it led to, that shows and fades away.
+    _flash(win) {
+        this._flashActor?.destroy();
+        const frame = new St.Widget({style_class: 'claude-acct-flash', opacity: 0, reactive: false});
+        this._flashActor = frame;
+        Main.layoutManager.uiGroup.add_child(frame);
+        // After a desktop switch the window is where it will be shown.
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 280, () => {
+            if (this._flashActor !== frame)
+                return GLib.SOURCE_REMOVE;
+            const r = win.get_frame_rect();
+            frame.set_position(r.x - 3, r.y - 3);
+            frame.set_size(r.width + 6, r.height + 6);
+            frame.ease({opacity: 255, duration: 150, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                onComplete: () => frame.ease({opacity: 0, delay: 700, duration: 650, mode: Clutter.AnimationMode.EASE_IN_QUAD,
+                    onComplete: () => {
+                        if (this._flashActor === frame)
+                            this._flashActor = null;
+                        frame.destroy();
+                    }})});
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     // The white dot: blink, blink, pause, in step with the lights.
@@ -830,7 +909,7 @@ export default class ClaudeAccountExtension extends Extension {
                     : 'Needs a one-time setup: install-lights.sh'));
             }
         }
-        this._tip.hide();
+        this._hideTip();
         menu.toggle();
     }
 
@@ -873,7 +952,7 @@ export default class ClaudeAccountExtension extends Extension {
         }
         if (!b._menu.isOpen)
             this._fillHistory(b);
-        this._tip.hide();
+        this._hideTip();
         b._menu.toggle();
     }
 
@@ -1092,25 +1171,48 @@ export default class ClaudeAccountExtension extends Extension {
         GLib.file_set_contents(GLib.build_filenamev([SLOTS, '.panel-unit']), `${unit}\n`);
     }
 
+    _tagText() {
+        if (this._needs.length > 1)
+            return `Claude needs you in ${this._needs.map(e => `“${this._chatName(e)}”`).join(', ')}. Click to open the first`;
+        if (this._needs.length)
+            return `Claude needs you in “${this._chatName(this._needs[0])}”. Click to open it`;
+        return this._busy ? 'Claude is working: no sleep until it\'s done, lid closed or not' : 'Claude is idle';
+    }
+
+    _hideTip() {
+        if (this._tipTimer)
+            GLib.source_remove(this._tipTimer);
+        this._tipTimer = null;
+        this._tip?.hide();
+        this._showTabs(false);
+    }
+
     _showTooltip(b) {
+        if (this._tipTimer)
+            GLib.source_remove(this._tipTimer);
+        this._tipTimer = null;
         if (!b.hover) {
-            this._tip.hide();
-            this._showTabs(false);
+            // The mascot's box stays while the pointer is on it, so its bars can be clicked.
+            if (b === this._tag) {
+                this._tipTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
+                    this._tipTimer = null;
+                    if (!this._tip.hover && !this._tag.hover)
+                        this._hideTip();
+                    return GLib.SOURCE_REMOVE;
+                });
+                return;
+            }
+            this._hideTip();
             return;
         }
-        if (b === this._tag && this._needs.length > 1)
-            this._tooltip.text = `Claude needs you in ${this._needs.map(e => `“${this._chatName(e)}”`).join(', ')}. ` +
-                'Click to open the first';
-        else if (b === this._tag && this._needs.length)
-            this._tooltip.text = `Claude needs you in “${this._chatName(this._needs[0])}”. Click to open it`;
-        else if (b === this._tag)
-            this._tooltip.text = this._busy ? 'Claude is working: no sleep until it\'s done, lid closed or not'
-                : 'Claude is idle';
+        if (b === this._tag)
+            this._tooltip.text = this._tagText();
         else if (b === this._addBtn)
             this._tooltip.text = 'Add a Claude account';
         else
             this._tooltip.text = this._signedIn.has(b._slot)
                 ? this._resetText(b._slot) : 'Not signed in. Click to sign in.';
+        this._tipFor = b;
         this._showTabs(b === this._tag);
         this._tip.show();
         this._placeTip(b);
@@ -1173,7 +1275,8 @@ export default class ClaudeAccountExtension extends Extension {
                 continue;
             const transcript = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'projects',
                 (info.cwd ?? '').replace(/[^A-Za-z0-9]/g, '-'), `${info.sessionId}.jsonl`]);
-            chats.push({id: info.sessionId, title: this._chatName({transcript, cwd: info.cwd}),
+            chats.push({id: info.sessionId, pid: info.pid, cwd: info.cwd, transcript,
+                title: this._chatName({transcript, cwd: info.cwd}),
                 state: needs.has(info.sessionId) ? 'needs' : busy.has(info.sessionId) ? 'working' : 'idle'});
         }
         // Windows desktop by desktop, then left to right (then top to bottom).
@@ -1196,25 +1299,38 @@ export default class ClaudeAccountExtension extends Extension {
         // A tab is a chat when it names the chat's session (claude --resume ID) or shows its title.
         const placed = [];
         for (const w of ordered) {
-            for (const tab of w.tabs ?? []) {
+            (w.tabs ?? []).forEach((tab, i) => {
                 const title = bareTitle(tab).replace(/ — .*$/, '');
                 const chat = chats.find(c => !placed.includes(c) && tab.includes(c.id)) ??
                     chats.find(c => !placed.includes(c) && c.title === title);
-                if (chat)
+                if (chat) {
+                    // Where to find it: its window, and its tab there (when the window has several).
+                    Object.assign(chat, {window: w.window, tab, tabIndex: i, tabCount: w.tabs.length});
                     placed.push(chat);
-            }
+                }
+            });
         }
         // Chats in other terminals come last.
         return [...placed, ...chats.filter(c => !placed.includes(c))];
     }
 
     _drawTabs(chats) {
-        const key = chats.map(c => c.state).join();
+        const key = chats.map(c => `${c.id}:${c.state}`).join();
         if (key !== this._tabsKey) {
             this._tabsKey = key;
             this._tabsRow.destroy_all_children();
-            for (const c of chats)
-                this._tabsRow.add_child(new St.Widget({style_class: `claude-acct-tab ${c.state}`, y_align: Clutter.ActorAlign.CENTER}));
+            for (const c of chats) {
+                const bar = new St.Button({style_class: `claude-acct-tab ${c.state}`, y_align: Clutter.ActorAlign.CENTER,
+                    can_focus: true, accessible_name: c.title});
+                bar._chat = c;
+                // Hovering a bar names its chat in the text above.
+                bar.connect('notify::hover', () => {
+                    const state = {idle: 'idle', working: 'working', needs: 'needs you'}[c.state];
+                    this._tooltip.text = bar.hover ? `${c.title} · ${state}` : this._tagText();
+                });
+                bar.connect('clicked', () => this._openTab(c));
+                this._tabsRow.add_child(bar);
+            }
         }
         this._tabsRow.visible = chats.length > 0;
         // Orange ones breathe while the box is open.

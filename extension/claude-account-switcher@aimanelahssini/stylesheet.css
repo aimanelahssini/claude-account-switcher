@@ -73,8 +73,20 @@
 /* A chat waits for you: a white dot that blinks twice and pauses, and the chat's name */
 .claude-acct-needs { spacing: 6px; color: #fff; font-family: monospace; font-size: 0.96em; }
 
-/* Under the mascot's hover text: one rounded rectangle per Claude chat, in tab order */
-.claude-acct-tabs { spacing: 4px; margin-top: 7px; margin-bottom: 1px; }
-.claude-acct-tab { width: 16px; height: 6px; border-radius: 3px; background-color: rgba(255,255,255,0.28); }
+/* Under the mascot's hover text: one rounded rectangle per Claude chat, in tab order;
+   hover one for its name, click it to go there */
+.claude-acct-tabs { spacing: 5px; margin-top: 8px; margin-bottom: 2px; }
+.claude-acct-tab {
+  width: 26px; height: 14px; border-radius: 4px;
+  background-color: rgba(255,255,255,0.28);
+  border: 1px solid transparent;
+}
+.claude-acct-tab:hover { background-color: rgba(255,255,255,0.45); border-color: rgba(255,255,255,0.6); }
 .claude-acct-tab.working { background-color: #d77757; }
+.claude-acct-tab.working:hover { background-color: #eb9f7f; border-color: #f5c0a8; }
 .claude-acct-tab.needs { background-color: #ffffff; }
+.claude-acct-tab.needs:hover { border-color: #d77757; }
+.claude-acct-tab:focus { border-color: #d77757; }
+
+/* The window a click led to: an orange frame that shows, then fades */
+.claude-acct-flash { border: 3px solid #d77757; border-radius: 14px; }
