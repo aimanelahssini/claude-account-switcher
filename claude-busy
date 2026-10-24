@@ -270,7 +270,9 @@ status)
     fi
     if working; then
         echo "working:"
-        for f in "$DIR"/*; do [ -f "$f" ] && echo "  ${f##*/}"; done
+        for f in "$DIR"/*; do
+            if [ -f "$f" ]; then echo "  ${f##*/}"; fi
+        done
     elif holding; then
         echo "idle, staying awake for the waiting minute"
     elif ! needing; then
