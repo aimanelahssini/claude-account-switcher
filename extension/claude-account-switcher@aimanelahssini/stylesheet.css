@@ -72,3 +72,9 @@
 
 /* A chat waits for you: a white dot that blinks twice and pauses, and the chat's name */
 .claude-acct-needs { spacing: 6px; color: #fff; font-family: monospace; font-size: 0.96em; }
+
+/* Under the mascot's hover text: one rounded rectangle per Claude chat, in tab order */
+.claude-acct-tabs { spacing: 4px; margin-top: 7px; margin-bottom: 1px; }
+.claude-acct-tab { width: 16px; height: 6px; border-radius: 3px; background-color: rgba(255,255,255,0.28); }
+.claude-acct-tab.working { background-color: #d77757; }
+.claude-acct-tab.needs { background-color: #ffffff; }

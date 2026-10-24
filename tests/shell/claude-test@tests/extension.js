@@ -256,6 +256,84 @@ async function run() {
     out('DONE');
 }
 
+// TEST_ONLY=tabs: the row of chats under the mascot's hover text, in tab order. Two desktops:
+// on the first a window on the left with two tabs and one on the right with one tab; on the
+// second a window with one tab. claude-tabs is a stand-in here (no accessibility bus).
+async function tabsTest() {
+    let ext;
+    for (let i = 0; i < 40 && !ext?._tabsRow; i++) {
+        await sleep(500);
+        ext = Main.extensionManager.lookup(UUID)?.stateObj;
+    }
+    Main.overview.hide();
+    const home = GLib.get_home_dir();
+    const busy = `${GLib.get_user_runtime_dir()}/claude-busy`;
+    const write = (path, text) => GLib.file_set_contents(path, text);
+    const spawn = (...argv) => GLib.spawn_async(null, argv, null, GLib.SpawnFlags.SEARCH_PATH, null)[1];
+    const windowTitled = t => global.get_window_actors().map(a => a.meta_window).find(w => w.get_title() === t);
+    // Four chats (live processes standing in for claude), their titles in their transcripts.
+    const names = {a: 'Alpha', b: 'Bravo', c: 'Charlie', d: 'Delta'};
+    GLib.mkdir_with_parents(`${home}/.claude/sessions`, 0o700);
+    GLib.mkdir_with_parents(`${home}/.claude/projects/-home-u-p`, 0o700);
+    for (const [k, title] of Object.entries(names)) {
+        const pid = spawn('sleep', '300');
+        write(`${home}/.claude/sessions/${pid}.json`, JSON.stringify({pid, sessionId: `s-${k}`, cwd: '/home/u/p'}));
+        write(`${home}/.claude/projects/-home-u-p/s-${k}.jsonl`, `${JSON.stringify({type: 'summary', aiTitle: title})}\n`);
+    }
+    // Bravo works, Charlie waits for you, Alpha and Delta are idle.
+    write(`${busy}/s-b`, '\n');
+    write(`${busy}/needs/s-c`, `\n${Math.floor(Date.now() / 1000)}\npermission\n/home/u/p\n${home}/.claude/projects/-home-u-p/s-c.jsonl\n`);
+    // Windows show their active tab's title; the stand-in lists them in a scrambled order.
+    for (const t of ['✳ Bravo — claude', '✳ Charlie — claude', '✳ Delta — claude']) {
+        spawn('python3', GLib.getenv('TEST_WINDOW'), t);
+        for (let i = 0; i < 40 && !windowTitled(t); i++) await sleep(250);
+    }
+    await sleep(800);
+    global.workspace_manager.append_new_workspace(false, global.get_current_time());
+    windowTitled('✳ Bravo — claude').move_frame(true, 40, 100);
+    windowTitled('✳ Charlie — claude').move_frame(true, 800, 100);
+    windowTitled('✳ Delta — claude').change_workspace_by_index(1, false);
+    windowTitled('✳ Delta — claude').move_frame(true, 10, 100);
+    await sleep(500);
+    const stub = `${home}/tabs-stub`;
+    write(stub, `#!/bin/sh\ncat <<'EOF'\n${JSON.stringify([
+        {window: '✳ Delta — claude', tabs: ['✳ Delta — claude']},
+        {window: '✳ Charlie — claude', tabs: ['✳ Charlie — claude']},
+        {window: '✳ Bravo — claude', tabs: ['✳ Alpha — claude', '✳ Bravo — claude']},
+    ])}\nEOF\n`);
+    GLib.chmod(stub, 0o755);
+    await sleep(600);
+
+    ext._tag.hover = true;
+    await sleep(900);
+    const rects = ext._tabsRow.get_children();
+    check('tabs: a rectangle per chat, under the text', ext._tabsRow.visible && rects.length === 4, `${rects.length}`);
+    check('tabs: in tab order (desktop, left to right, tabs)', ext._tabsCache.map(c => c.id).join() === 's-a,s-b,s-c,s-d',
+        ext._tabsCache.map(c => c.id).join());
+    check('tabs: grey idle, orange working, white waiting for you',
+        rects.map(r => ['idle', 'working', 'needs'].find(k => r.has_style_class_name(k))).join() === 'idle,working,needs,idle',
+        rects.map(r => r.get_style_class_name()).join(' | '));
+    check('tabs: only the orange one breathes', rects.map(r => !!r.get_transition('opacity')).join() === 'false,true,false,false');
+    check('tabs: no names or numbers', rects.every(r => r.get_n_children() === 0));
+    check('tabs: hover text above', /Claude needs you in “Charlie”/.test(ext._tooltip.text), ext._tooltip.text);
+    // For the docs: the box with the white one blinking state left as it is.
+    const [tx, ty] = ext._tip.get_transformed_position();
+    const [tw, th] = ext._tip.get_transformed_size();
+    const stream = Gio.File.new_for_path(`${OUT}/tabs.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
+    const [ix] = ext._indicator.get_transformed_position();
+    await new Shell.Screenshot().screenshot_area(Math.min(ix, tx) - 12, 0, Math.max(ix + ext._indicator.width, tx + tw) - Math.min(ix, tx) + 24, ty + th + 12, stream);
+    stream.close(null);
+    ext._tag.hover = false;
+    await sleep(300);
+    check('tabs: animation stops with the box', rects.every(r => !r.get_transition('opacity')) && !ext._tabsRow.visible);
+    // Not under an account's hover text.
+    ext._buttons[0].hover = true;
+    await sleep(400);
+    check('tabs: only under the mascot', !ext._tabsRow.visible);
+    ext._buttons[0].hover = false;
+    out('DONE');
+}
+
 // TEST_ONLY=needs: a chat waiting for you, its permission prompt as a notification, the lights.
 async function needsTest() {
     let ext;
@@ -403,7 +481,7 @@ async function tokensPanel() {
 export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            ({'tokens-panel': tokensPanel, needs: needsTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
+            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => global.context.terminate());
             });
             return GLib.SOURCE_REMOVE;

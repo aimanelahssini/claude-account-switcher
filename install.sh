@@ -7,6 +7,7 @@ UUID=claude-account-switcher@aimanelahssini
 
 install -Dm755 claude-account ~/.local/bin/claude-account
 install -Dm755 claude-busy ~/.local/bin/claude-busy
+install -Dm755 claude-tabs ~/.local/bin/claude-tabs
 # Claude Code hooks that tell claude-busy when a session works and when it's done. Replaces
 # earlier claude-busy hooks and leaves every other setting and hook as it is.
 python3 - <<'PY'

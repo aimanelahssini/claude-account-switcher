@@ -13,7 +13,7 @@ subprocess.run(['gsettings', 'set', 'org.gnome.shell', 'enabled-extensions', str
 PY
 fi
 rm -rf ~/.local/share/gnome-shell/extensions/$UUID
-rm -f ~/.local/bin/claude-account ~/.local/bin/claude-busy
+rm -f ~/.local/bin/claude-account ~/.local/bin/claude-busy ~/.local/bin/claude-tabs
 # Only the claude-busy hooks; every other setting and hook stays.
 python3 - <<'PY'
 import json, os

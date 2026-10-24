@@ -21,6 +21,7 @@ const BUSY_DIR = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'claude-busy
 const NEEDS_DIR = GLib.build_filenamev([BUSY_DIR, 'needs']);
 const ASK_DIR = GLib.build_filenamev([BUSY_DIR, 'ask']);
 const BUSY_CMD = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'claude-busy']);
+const TABS_CMD = GLib.getenv('CLAUDE_TABS_CMD') || GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'claude-tabs']);  // tests use a stand-in
 // "Needs you": the white dot blinks twice and pauses, [opacity, ms] steps. The ThinkPad lights
 // play the same (claude-busy's patterns, repeated here to re-align them with the top bar).
 const NEEDS_STEPS = [[255, 150], [90, 150], [255, 150], [90, 1800]];
@@ -275,8 +276,15 @@ export default class ClaudeAccountExtension extends Extension {
         this._addBtn.connect('clicked', () => this._askNewAccount());
         this._addBtn.connect('notify::hover', () => this._showTooltip(this._addBtn));
         this._box.add_child(this._addBtn);
-        this._tooltip = new St.Label({style_class: 'claude-acct-tooltip', visible: false});
-        Main.layoutManager.uiGroup.add_child(this._tooltip);
+        // The hover box: a line of text, and for the mascot a row of your Claude chats.
+        this._tip = new St.BoxLayout({style_class: 'claude-acct-tooltip', vertical: true, visible: false});
+        this._tooltip = new St.Label({style_class: 'claude-acct-tooltip-text'});
+        this._tabsRow = new St.BoxLayout({style_class: 'claude-acct-tabs', x_align: Clutter.ActorAlign.CENTER,
+            visible: false});
+        this._tip.add_child(this._tooltip);
+        this._tip.add_child(this._tabsRow);
+        Main.layoutManager.uiGroup.add_child(this._tip);
+        this._tabsKey = '';
 
         GLib.mkdir_with_parents(SLOTS, 0o700);
         this._monitor = Gio.File.new_for_path(SLOTS).monitor_directory(Gio.FileMonitorFlags.NONE, null);
@@ -339,8 +347,11 @@ export default class ClaudeAccountExtension extends Extension {
         this._monitor = null;
         this._indicator?.destroy();
         this._indicator = null;
-        this._tooltip?.destroy();
+        this._tabsCancel?.cancel();
+        this._tip?.destroy();
+        this._tip = null;
         this._tooltip = null;
+        this._tabsRow = null;
         this._buttons?.forEach(b => b._menu?.destroy());
         this._options?.destroy();
         this._options = null;
@@ -448,7 +459,7 @@ export default class ClaudeAccountExtension extends Extension {
         const win = this._chatWindow(entry);
         if (win)
             Main.activateWindow(win);
-        this._tooltip.hide();
+        this._tip.hide();
     }
 
     // The white dot: blink, blink, pause, in step with the lights.
@@ -819,7 +830,7 @@ export default class ClaudeAccountExtension extends Extension {
                     : 'Needs a one-time setup: install-lights.sh'));
             }
         }
-        this._tooltip.hide();
+        this._tip.hide();
         menu.toggle();
     }
 
@@ -862,7 +873,7 @@ export default class ClaudeAccountExtension extends Extension {
         }
         if (!b._menu.isOpen)
             this._fillHistory(b);
-        this._tooltip.hide();
+        this._tip.hide();
         b._menu.toggle();
     }
 
@@ -1083,7 +1094,8 @@ export default class ClaudeAccountExtension extends Extension {
 
     _showTooltip(b) {
         if (!b.hover) {
-            this._tooltip.hide();
+            this._tip.hide();
+            this._showTabs(false);
             return;
         }
         if (b === this._tag && this._needs.length > 1)
@@ -1099,11 +1111,121 @@ export default class ClaudeAccountExtension extends Extension {
         else
             this._tooltip.text = this._signedIn.has(b._slot)
                 ? this._resetText(b._slot) : 'Not signed in. Click to sign in.';
-        this._tooltip.show();
+        this._showTabs(b === this._tag);
+        this._tip.show();
+        this._placeTip(b);
+    }
+
+    _placeTip(b) {
         const [x, y] = b.get_transformed_position();
         const [w, h] = b.get_transformed_size();
-        const [, tw] = this._tooltip.get_preferred_width(-1);
-        this._tooltip.set_position(Math.round(x + w / 2 - tw / 2), Math.round(y + h + 6));
+        const [, tw] = this._tip.get_preferred_width(-1);
+        this._tip.set_position(Math.round(x + w / 2 - tw / 2), Math.round(y + h + 6));
+    }
+
+    // ---- your chats, under the mascot's hover text ------------------------------------
+    // One rounded rectangle per Claude chat, in the order of your terminal tabs: desktop by
+    // desktop, windows left to right, tabs in their order. Grey: idle; orange and breathing:
+    // working; white: waiting for you. No names or numbers, only where they are.
+    _showTabs(on) {
+        this._tabsCancel?.cancel();
+        this._tabsCancel = null;
+        if (!on) {
+            this._tabsRow.visible = false;
+            this._tabsRow.get_children().forEach(c => c.remove_all_transitions());
+            return;
+        }
+        this._drawTabs(this._tabsCache ?? []);
+        // claude-tabs reads the terminals' tabs from the accessibility bus (about 0.2 s).
+        const cancel = new Gio.Cancellable();
+        this._tabsCancel = cancel;
+        try {
+            const proc = Gio.Subprocess.new([TABS_CMD], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
+            proc.communicate_utf8_async(null, cancel, (p, res) => {
+                let windows = [];
+                try {
+                    windows = JSON.parse(p.communicate_utf8_finish(res)[1]);
+                } catch {
+                    if (cancel.is_cancelled())
+                        return;
+                }
+                this._tabsCache = this._orderChats(windows);
+                if (this._tip?.visible && this._tabsCancel === cancel)
+                    this._drawTabs(this._tabsCache);
+            });
+        } catch {}
+    }
+
+    // Claude's live chats with their state, [{id, title, state}], in your tab order.
+    _orderChats(windows) {
+        const busy = new Set(this._sessionFiles(BUSY_DIR));
+        const needs = new Set(this._readNeeds().map(e => e.id));
+        const chats = [];
+        const sessions = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'sessions']);
+        for (const name of this._sessionFiles(sessions).filter(n => n.endsWith('.json'))) {
+            let info;
+            try {
+                info = JSON.parse(readText(GLib.build_filenamev([sessions, name])));
+            } catch {
+                continue;
+            }
+            if (!info?.sessionId || !GLib.file_test(`/proc/${info.pid}`, GLib.FileTest.EXISTS))
+                continue;
+            const transcript = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'projects',
+                (info.cwd ?? '').replace(/[^A-Za-z0-9]/g, '-'), `${info.sessionId}.jsonl`]);
+            chats.push({id: info.sessionId, title: this._chatName({transcript, cwd: info.cwd}),
+                state: needs.has(info.sessionId) ? 'needs' : busy.has(info.sessionId) ? 'working' : 'idle'});
+        }
+        // Windows desktop by desktop, then left to right (then top to bottom).
+        const metaWindows = global.get_window_actors().map(a => a.meta_window);
+        const place = title => {
+            const w = metaWindows.find(m => (m.get_title() ?? '').trim() === title);
+            if (!w)
+                return [99, 0, 0];
+            const r = w.get_frame_rect();
+            return [w.get_workspace()?.index() ?? 0, r.x, r.y];
+        };
+        const before = (a, b) => {
+            for (let k = 0; k < a.length; k++) {
+                if (a[k] !== b[k])
+                    return a[k] - b[k];
+            }
+            return 0;
+        };
+        const ordered = windows.map((w, i) => ({...w, at: [...place(w.window), i]})).sort((a, b) => before(a.at, b.at));
+        // A tab is a chat when it names the chat's session (claude --resume ID) or shows its title.
+        const placed = [];
+        for (const w of ordered) {
+            for (const tab of w.tabs ?? []) {
+                const title = bareTitle(tab).replace(/ — .*$/, '');
+                const chat = chats.find(c => !placed.includes(c) && tab.includes(c.id)) ??
+                    chats.find(c => !placed.includes(c) && c.title === title);
+                if (chat)
+                    placed.push(chat);
+            }
+        }
+        // Chats in other terminals come last.
+        return [...placed, ...chats.filter(c => !placed.includes(c))];
+    }
+
+    _drawTabs(chats) {
+        const key = chats.map(c => c.state).join();
+        if (key !== this._tabsKey) {
+            this._tabsKey = key;
+            this._tabsRow.destroy_all_children();
+            for (const c of chats)
+                this._tabsRow.add_child(new St.Widget({style_class: `claude-acct-tab ${c.state}`, y_align: Clutter.ActorAlign.CENTER}));
+        }
+        this._tabsRow.visible = chats.length > 0;
+        // Orange ones breathe while the box is open.
+        for (const r of this._tabsRow.get_children()) {
+            r.remove_all_transitions();
+            r.opacity = 255;
+            if (r.has_style_class_name('working'))
+                r.ease({opacity: 90, duration: 900, mode: Clutter.AnimationMode.EASE_IN_OUT_SINE, repeatCount: -1, autoReverse: true});
+        }
+        if (this._tip.visible)
+            this._placeTip(this._tag);
     }
 
     _run(args, onDone) {
