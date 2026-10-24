@@ -18,6 +18,13 @@ const out = s => {
     lines.push(s);
     GLib.file_set_contents(`${OUT}/results.txt`, lines.join('\n') + '\n');
 };
+// Processes standing in for claude; stopped when the test ends so none outlive it.
+const standIns = [];
+const standIn = () => {
+    const pid = GLib.spawn_async(null, ['sleep', '300'], null, GLib.SpawnFlags.SEARCH_PATH, null)[1];
+    standIns.push(pid);
+    return pid;
+};
 const check = (name, ok, extra = '') => out(`${ok ? 'PASS' : 'FAIL'} ${name} ${extra}`);
 const sleep = ms => new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
     r();
@@ -276,7 +283,7 @@ async function flashDemo() {
     GLib.mkdir_with_parents(`${home}/.claude/projects/-home-u-p`, 0o700);
     const titles = {a: 'Fix the poster upload', b: 'Weekly report', c: 'Tidy the photos'};
     for (const [k, title] of Object.entries(titles)) {
-        const pid = spawn('sleep', '300');
+        const pid = standIn();
         write(`${home}/.claude/sessions/${pid}.json`, JSON.stringify({pid, sessionId: `s-${k}`, cwd: '/home/u/p'}));
         write(`${home}/.claude/projects/-home-u-p/s-${k}.jsonl`, `${JSON.stringify({type: 'summary', aiTitle: title})}\n`);
     }
@@ -404,7 +411,7 @@ async function tabsTest() {
     GLib.mkdir_with_parents(`${home}/.claude/sessions`, 0o700);
     GLib.mkdir_with_parents(`${home}/.claude/projects/-home-u-p`, 0o700);
     for (const [k, title] of Object.entries(names)) {
-        const pid = spawn('sleep', '300');
+        const pid = standIn();
         write(`${home}/.claude/sessions/${pid}.json`, JSON.stringify({pid, sessionId: `s-${k}`, cwd: '/home/u/p'}));
         write(`${home}/.claude/projects/-home-u-p/s-${k}.jsonl`, `${JSON.stringify({type: 'summary', aiTitle: title})}\n`);
     }
@@ -510,7 +517,7 @@ async function tabsTest() {
     check('tabs: animation stops with the box', rects.every(r => !r.get_transition('opacity')) && !ext._tabsRow.visible);
     // A chat that starts while the box is closed: the tab layout is looked at again in the
     // background, so the box opens with it right away (no bar popping in).
-    const pid5 = spawn('sleep', '300');
+    const pid5 = standIn();
     write(stub, `#!/bin/sh\ncat <<'EOF'\n${JSON.stringify([
         {window: '✳ Delta — claude', tabs: ['✳ Delta — claude', '✳ Echo — claude']},
         {window: '✳ Charlie — claude', tabs: ['✳ Charlie — claude']},
@@ -684,7 +691,11 @@ export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest, flashdemo: flashDemo}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
-                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => global.context.terminate());
+                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+                    for (const pid of standIns)
+                        GLib.spawn_command_line_sync(`kill ${pid}`);
+                    global.context.terminate();
+                });
             });
             return GLib.SOURCE_REMOVE;
         });
