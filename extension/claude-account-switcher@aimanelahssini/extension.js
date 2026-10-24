@@ -360,6 +360,7 @@ export default class ClaudeAccountExtension extends Extension {
         }
         this._syncBusy();
         this._syncAsks();
+        this._watchSessions();
         // Our banners open expanded, with their Yes / Always / No buttons showing.
         Main.messageTray.connectObject('queue-changed', () => GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             const tray = Main.messageTray;
@@ -393,7 +394,13 @@ export default class ClaudeAccountExtension extends Extension {
         this._monitor = null;
         this._indicator?.destroy();
         this._indicator = null;
-        this._tabsCancel?.cancel();
+        this._sessionsMonitor?.cancel();
+        this._sessionsMonitor = null;
+        if (this._sessionsTimer)
+            GLib.source_remove(this._sessionsTimer);
+        this._sessionsTimer = null;
+        this._tabsProc = null;
+        this._tabsAgain = null;
         if (this._tipTimer)
             GLib.source_remove(this._tipTimer);
         this._tipTimer = null;
@@ -1224,6 +1231,7 @@ export default class ClaudeAccountExtension extends Extension {
         if (this._tipTimer)
             GLib.source_remove(this._tipTimer);
         this._tipTimer = null;
+        this._tip?.remove_all_transitions();
         this._tip?.hide();
         this._showTabs(false);
     }
@@ -1257,7 +1265,14 @@ export default class ClaudeAccountExtension extends Extension {
             this._tooltip.width = -1;   // the other buttons' hover text fits its own width
         this._tipFor = b;
         this._showTabs(b === this._tag);
-        this._tip.show();
+        if (!this._tip.visible) {
+            // Fades in like GNOME's own hover labels.
+            this._tip.opacity = 0;
+            this._tip.show();
+            this._tip.ease({opacity: 255, duration: 120, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+        }
+        if (b === this._tag)
+            this._breathe();
         this._placeTip(b);
     }
 
@@ -1276,32 +1291,83 @@ export default class ClaudeAccountExtension extends Extension {
     // desktop, windows left to right, tabs in their order. Grey: idle; orange and breathing:
     // working; white: waiting for you. No names or numbers, only where they are.
     _showTabs(on) {
-        this._tabsCancel?.cancel();
-        this._tabsCancel = null;
         if (!on) {
             this._tabsRow.visible = false;
             this._tabsRow.get_children().forEach(c => c.remove_all_transitions());
             return;
         }
-        this._drawTabs(this._tabsCache ?? []);
-        // claude-tabs reads the terminals' tabs from the accessibility bus (about 0.2 s).
-        const cancel = new Gio.Cancellable();
-        this._tabsCancel = cancel;
+        // The last known tab layout, with each chat's state as it is now; then a fresh look at
+        // the tabs, redrawn only if they changed (it's usually fresh already, see _watchSessions).
+        this._redrawTabs();
+        this._refreshTabs(() => this._redrawTabs());
+    }
+
+    _redrawTabs() {
+        this._tabsCache = this._orderChats(this._tabsWindows ?? []);
+        this._drawTabs(this._tabsCache);
+    }
+
+    // claude-tabs reads the terminals' tabs from the accessibility bus (about 0.2 s), one run at
+    // a time; onChange runs when the layout differs from the last one.
+    _refreshTabs(onChange) {
+        if (this._tabsProc) {
+            this._tabsAgain = onChange;
+            return;
+        }
         try {
             const proc = Gio.Subprocess.new([TABS_CMD], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
-            proc.communicate_utf8_async(null, cancel, (p, res) => {
-                let windows = [];
+            this._tabsProc = proc;
+            proc.communicate_utf8_async(null, null, (p, res) => {
+                let text = null;
                 try {
-                    windows = JSON.parse(p.communicate_utf8_finish(res)[1]);
-                } catch {
-                    if (cancel.is_cancelled())
-                        return;
+                    text = p.communicate_utf8_finish(res)[1];
+                } catch {}
+                if (this._tabsProc !== proc)
+                    return;   // disabled meanwhile
+                this._tabsProc = null;
+                let windows = null;
+                try {
+                    windows = JSON.parse(text);
+                } catch {}
+                if (Array.isArray(windows) && JSON.stringify(windows) !== JSON.stringify(this._tabsWindows)) {
+                    this._tabsWindows = windows;
+                    if (this._tip?.visible && this._tipFor === this._tag)
+                        onChange?.();
                 }
-                this._tabsCache = this._orderChats(windows);
-                if (this._tip?.visible && this._tabsCancel === cancel)
-                    this._drawTabs(this._tabsCache);
+                const again = this._tabsAgain;
+                this._tabsAgain = null;
+                if (again)
+                    this._refreshTabs(again);
             });
-        } catch {}
+        } catch {
+            this._tabsProc = null;
+        }
+    }
+
+    // A chat starting or ending changes the tabs: look again in the background (twice, as Claude
+    // titles its terminal a moment after it starts), so the box opens with them right.
+    _watchSessions() {
+        const dir = Gio.File.new_for_path(GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'sessions']));
+        try {
+            this._sessionsMonitor = dir.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
+        } catch {
+            return;
+        }
+        this._sessionsMonitor.connect('changed', (m, f, o, event) => {
+            if (event === Gio.FileMonitorEvent.CHANGED || event === Gio.FileMonitorEvent.CHANGES_DONE_HINT)
+                return;
+            if (this._sessionsTimer)
+                GLib.source_remove(this._sessionsTimer);
+            let runs = 0;
+            this._sessionsTimer = GLib.timeout_add(GLib.PRIORITY_LOW, 1500, () => {
+                this._refreshTabs(() => this._redrawTabs());
+                if (++runs < 2)
+                    return GLib.SOURCE_CONTINUE;   // and once more after Claude titled its tab
+                this._sessionsTimer = null;
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+        this._refreshTabs(null);
     }
 
     // Claude's live chats with their state, [{id, title, state}], in your tab order.
@@ -1368,26 +1434,35 @@ export default class ClaudeAccountExtension extends Extension {
             for (const c of chats) {
                 const bar = new St.Button({style_class: `claude-acct-tab ${c.state}`, y_align: Clutter.ActorAlign.CENTER,
                     can_focus: true, accessible_name: c.title});
-                bar._chat = c;
+                // A hand over it: it can be clicked.
+                bar.set_cursor_type?.(Clutter.CursorType.POINTER);
+                // The chat as last seen (its tab's place can be learnt after the bar was made).
+                const chat = () => this._tabsCache?.find(x => x.id === c.id) ?? c;
                 // Hovering a bar names its chat in the text above.
                 bar.connect('notify::hover', () => {
-                    this._tooltip.text = bar.hover ? barText(c) : this._tagText();
+                    this._tooltip.text = bar.hover ? barText(chat()) : this._tagText();
                 });
-                bar.connect('clicked', () => this._openTab(c));
+                bar.connect('clicked', () => this._openTab(chat()));
                 this._tabsRow.add_child(bar);
             }
         }
         this._tabsRow.visible = chats.length > 0;
         this._fitTagText(chats);
-        // Orange ones breathe while the box is open.
+        if (this._tip.visible) {
+            this._breathe();
+            this._placeTip(this._tag);
+        }
+    }
+
+    // Orange ones breathe while the box is open (GNOME only animates what's on screen, so this
+    // runs once the box shows).
+    _breathe() {
         for (const r of this._tabsRow.get_children()) {
             r.remove_all_transitions();
             r.opacity = 255;
             if (r.has_style_class_name('working'))
                 r.ease({opacity: 90, duration: 900, mode: Clutter.AnimationMode.EASE_IN_OUT_SINE, repeatCount: -1, autoReverse: true});
         }
-        if (this._tip.visible)
-            this._placeTip(this._tag);
     }
 
     // The mascot's box keeps one width while it's open: as wide as the longest text it can show

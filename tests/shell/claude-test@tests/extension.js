@@ -348,7 +348,9 @@ async function tabsTest() {
     check('tabs: grey idle, orange working, white waiting for you',
         rects.map(r => ['idle', 'working', 'needs'].find(k => r.has_style_class_name(k))).join() === 'idle,working,needs,idle',
         rects.map(r => r.get_style_class_name()).join(' | '));
-    check('tabs: only the orange one breathes', rects.map(r => !!r.get_transition('opacity')).join() === 'false,true,false,false');
+    check('tabs: only the orange one breathes', rects.map(r => !!r.get_transition('opacity')).join() === 'false,true,false,false',
+        rects.map(r => !!r.get_transition('opacity')).join());
+    check('tabs: a hand over the bars', rects.every(r => r.get_cursor_type?.() === Clutter.CursorType.POINTER));
     check('tabs: no names or numbers', rects.every(r => r.get_n_children() === 0));
     check('tabs: hover text above', /Claude needs you in “Charlie”/.test(ext._tooltip.text), ext._tooltip.text);
     // For the docs: the box with the white one blinking state left as it is.
@@ -413,6 +415,26 @@ async function tabsTest() {
     ext._tag.hover = false;
     await sleep(500);
     check('tabs: animation stops with the box', rects.every(r => !r.get_transition('opacity')) && !ext._tabsRow.visible);
+    // A chat that starts while the box is closed: the tab layout is looked at again in the
+    // background, so the box opens with it right away (no bar popping in).
+    const pid5 = spawn('sleep', '300');
+    write(stub, `#!/bin/sh\ncat <<'EOF'\n${JSON.stringify([
+        {window: '✳ Delta — claude', tabs: ['✳ Delta — claude', '✳ Echo — claude']},
+        {window: '✳ Charlie — claude', tabs: ['✳ Charlie — claude']},
+        {window: '✳ Bravo — claude', tabs: ['✳ Alpha — claude', '✳ Bravo — claude']},
+    ])}\nEOF\n`);
+    write(`${home}/.claude/projects/-home-u-p/s-e.jsonl`, `${JSON.stringify({type: 'summary', aiTitle: 'Echo'})}\n`);
+    write(`${home}/.claude/sessions/${pid5}.json`, JSON.stringify({pid: pid5, sessionId: 's-e', cwd: '/home/u/p'}));
+    await sleep(2500);
+    check('tabs: a new chat is picked up in the background', JSON.stringify(ext._tabsWindows ?? []).includes('Echo'));
+    ext._tag.hover = true;
+    check('tabs: the box fades in', !!ext._tip.get_transition('opacity'));
+    await sleep(50);
+    check('tabs: opens with every chat at once, in place', ext._tabsCache.map(c => c.id).join() === 's-a,s-b,s-c,s-d,s-e',
+        ext._tabsCache.map(c => c.id).join());
+    ext._tag.hover = false;
+    await sleep(500);
+
     // Not under an account's hover text.
     ext._buttons[0].hover = true;
     await sleep(400);
