@@ -160,7 +160,7 @@ async function run() {
     await sleep(1200);
     const items = ext._options._getMenuItems();
     const switches = items.filter(i => i._switch);
-    check('options: menu open', ext._options.isOpen && switches.length === 2,
+    check('options: menu open', ext._options.isOpen && switches.length === 4,
         items.map(i => i.label?.text).filter(Boolean).join(' | '));
     check('options: both on by default', switches.every(i => i.state));
     await shot('options', ext, false, ext._options.actor);
