@@ -257,6 +257,99 @@ async function run() {
     out('DONE');
 }
 
+// TEST_ONLY=flashdemo: not a test, a recording for the README: hover the mascot, hover a chat's
+// bar, click it; its window comes forward and the orange frame closes in on it. Frames and a
+// timeline (with where the pointer is) go to $TEST_OUT/demo/.
+async function flashDemo() {
+    let ext;
+    for (let i = 0; i < 40 && !ext?._tabsRow; i++) {
+        await sleep(500);
+        ext = Main.extensionManager.lookup(UUID)?.stateObj;
+    }
+    Main.overview.hide();
+    const home = GLib.get_home_dir();
+    const busy = `${GLib.get_user_runtime_dir()}/claude-busy`;
+    const write = (path, text) => GLib.file_set_contents(path, text);
+    const spawn = (...argv) => GLib.spawn_async(null, argv, null, GLib.SpawnFlags.SEARCH_PATH, null)[1];
+    const windowTitled = t => global.get_window_actors().map(a => a.meta_window).find(w => w.get_title() === t);
+    GLib.mkdir_with_parents(`${home}/.claude/sessions`, 0o700);
+    GLib.mkdir_with_parents(`${home}/.claude/projects/-home-u-p`, 0o700);
+    const titles = {a: 'Fix the poster upload', b: 'Weekly report', c: 'Tidy the photos'};
+    for (const [k, title] of Object.entries(titles)) {
+        const pid = spawn('sleep', '300');
+        write(`${home}/.claude/sessions/${pid}.json`, JSON.stringify({pid, sessionId: `s-${k}`, cwd: '/home/u/p'}));
+        write(`${home}/.claude/projects/-home-u-p/s-${k}.jsonl`, `${JSON.stringify({type: 'summary', aiTitle: title})}\n`);
+    }
+    write(`${busy}/s-b`, '\n');
+    const stub = `${home}/tabs-stub`;
+    write(stub, `#!/bin/sh\ncat <<'EOF'\n${JSON.stringify([
+        {window: '✳ Fix the poster upload — claude', tabs: ['✳ Fix the poster upload — claude']},
+        {window: '✳ Weekly report — claude', tabs: ['✳ Weekly report — claude', '✳ Tidy the photos — claude']},
+    ])}\nEOF\n`);
+    GLib.chmod(stub, 0o755);
+    for (const t of ['✳ Fix the poster upload — claude', '✳ Weekly report — claude']) {
+        spawn('python3', GLib.getenv('TEST_WINDOW'), t);
+        for (let i = 0; i < 40 && !windowTitled(t); i++) await sleep(250);
+    }
+    await sleep(800);
+    windowTitled('✳ Fix the poster upload — claude').move_resize_frame(true, 760, 150, 520, 330);
+    windowTitled('✳ Weekly report — claude').move_resize_frame(true, 880, 230, 520, 330);
+    Main.activateWindow(windowTitled('✳ Weekly report — claude'));
+    ext._refreshTabs(null);
+    await sleep(1500);
+
+    const dir = `${OUT}/demo`;
+    GLib.mkdir_with_parents(dir, 0o755);
+    const area = [640, 0, 800, 520];
+    const pointer = Clutter.get_default_backend().get_default_seat().create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+    let at = [1100, 700];
+    const move = async (x, y, ms) => {
+        const [x0, y0] = at;
+        const steps = Math.max(1, Math.round(ms / 16));
+        for (let i = 1; i <= steps; i++) {
+            const k = i / steps, e = k * k * (3 - 2 * k);
+            at = [x0 + (x - x0) * e, y0 + (y - y0) * e];
+            pointer.notify_absolute_motion(GLib.get_monotonic_time(), ...at);
+            await sleep(16);
+        }
+    };
+    const timeline = [];
+    const t0 = GLib.get_monotonic_time();
+    let recording = true;
+    const recorder = (async () => {
+        let n = 0;
+        while (recording) {
+            const t = (GLib.get_monotonic_time() - t0) / 1000;
+            const name = `${dir}/frame-${String(n).padStart(4, '0')}.png`;
+            const stream = Gio.File.new_for_path(name).replace(null, false, Gio.FileCreateFlags.NONE, null);
+            await new Shell.Screenshot().screenshot_area(...area, stream);
+            stream.close(null);
+            timeline.push({t, file: name, x: at[0] - area[0], y: at[1] - area[1]});
+            n++;
+        }
+    })();
+    pointer.notify_absolute_motion(GLib.get_monotonic_time(), ...at);
+    await sleep(500);
+    const [mx, my] = ext._tag.get_transformed_position();
+    await move(mx + ext._tag.width / 2, my + ext._tag.height / 2, 600);
+    await sleep(900);
+    const bar = ext._tabsRow.get_children()[0];
+    const [bx, by] = bar.get_transformed_position();
+    await move(bx + bar.width / 2, by + bar.height / 2, 450);
+    await sleep(800);
+    pointer.notify_button(GLib.get_monotonic_time(), Clutter.BUTTON_PRIMARY, Clutter.ButtonState.PRESSED);
+    await sleep(60);
+    pointer.notify_button(GLib.get_monotonic_time(), Clutter.BUTTON_PRIMARY, Clutter.ButtonState.RELEASED);
+    timeline.push({click: (GLib.get_monotonic_time() - t0) / 1000});
+    await sleep(1500);
+    recording = false;
+    await recorder;
+    write(`${dir}/timeline.json`, JSON.stringify(timeline));
+    check('demo: recorded', timeline.length > 40, `${timeline.length} frames`);
+    check('demo: the click led to the chat', global.display.focus_window?.get_title() === '✳ Fix the poster upload — claude');
+    out('DONE');
+}
+
 // TEST_ONLY=edge: the top bar's buttons answer to the pointer over the bar's full height (the
 // very top pixel row included), while drawn the same as before.
 async function edgeTest() {
@@ -396,7 +489,7 @@ async function tabsTest() {
     const accel = new Gio.Settings({schema_id: 'org.gnome.Ptyxis.Shortcuts'}).get_string('focus-tab-1');
     check('tabs: and to its tab, with the terminal\'s shortcut', !!ext._pressed?.length, `${accel} -> ${ext._pressed}`);
     check('tabs: an orange frame shows around it', !!ext._flashActor && ext._flashActor.opacity > 0 &&
-        Math.abs(ext._flashActor.x - (windowTitled('✳ Bravo — claude').get_frame_rect().x - 3)) <= 1);
+        Math.abs(ext._flashActor.x - (windowTitled('✳ Bravo — claude').get_frame_rect().x - 8)) <= 1);
     check('tabs: the box closes', !ext._tip.visible);
     await shot('flash', ext);
     const fs = Gio.File.new_for_path(`${OUT}/flash-window.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
@@ -590,7 +683,7 @@ async function tokensPanel() {
 export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
+            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest, flashdemo: flashDemo}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => global.context.terminate());
             });
             return GLib.SOURCE_REMOVE;

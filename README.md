@@ -123,6 +123,8 @@ When a chat stops for a permission prompt, a question or a plan to approve:
 
 <p align="center"><img src="docs/tabs.png" width="376" alt="Hover box under the top bar: Claude needs you in Charlie, click to open it, and below it four rounded rectangles: grey, orange, white, grey"></p>
 
+<p align="center"><img src="docs/flash.gif" width="600" alt="Hovering the mascot shows the chats' bars; clicking one brings its window forward from behind another, and a soft orange frame closes in on it and fades"></p>
+
 - **Notification**, for permission prompts: the project as its title, the request in plain
   words and the exact command, and **Yes**, **Always** (when Claude Code offers "don't ask
   again") and **No**. The prompt stays open in the terminal too; whichever you answer first
