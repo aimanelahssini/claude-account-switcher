@@ -883,6 +883,8 @@ export default class ClaudeAccountExtension extends Extension {
             b._track.opacity = signedIn ? 255 : 0;
             if (signedIn) b.remove_style_class_name('signed-out');
             else b.add_style_class_name('signed-out');
+            if (signedIn)
+                this._historyMenu(b);
             if (!signedIn) {
                 b._pct.text = 'sign in';
                 b.remove_style_class_name('active');
@@ -991,20 +993,32 @@ export default class ClaudeAccountExtension extends Extension {
     }
 
     // ---- usage history panel -------------------------------------------------------
-    _toggleHistory(b) {
-        if (!b._menu) {
-            this._menuManager ??= new PopupMenu.PopupMenuManager(this._indicator);
-            b._menu = new PopupMenu.PopupMenu(b, 0.5, St.Side.TOP);
-            b._menu.actor.add_style_class_name('claude-acct-menu');
-            Main.uiGroup.add_child(b._menu.actor);
-            b._menu.actor.hide();
-            this._menuManager.addMenu(b._menu);
-            b.connect('destroy', () => b._menu?.destroy());
-        }
-        if (!b._menu.isOpen)
+    // Every signed-in account has its history panel ready, so that with one open, sliding the
+    // pointer onto another account opens that one's (GNOME only does this between menus that
+    // exist).
+    _historyMenu(b) {
+        if (b._menu)
+            return b._menu;
+        this._menuManager ??= new PopupMenu.PopupMenuManager(this._indicator);
+        b._menu = new PopupMenu.PopupMenu(b, 0.5, St.Side.TOP);
+        b._menu.actor.add_style_class_name('claude-acct-menu');
+        Main.uiGroup.add_child(b._menu.actor);
+        b._menu.actor.hide();
+        // Filled right before it opens (GNOME won't open an empty menu), whoever opens it.
+        const open = b._menu.open.bind(b._menu);
+        b._menu.open = animate => {
+            this._hideTip();
             this._fillHistory(b);
+            open(animate);
+        };
+        this._menuManager.addMenu(b._menu);
+        b.connect('destroy', () => b._menu?.destroy());
+        return b._menu;
+    }
+
+    _toggleHistory(b) {
         this._hideTip();
-        b._menu.toggle();
+        this._historyMenu(b).toggle();
     }
 
     _fillHistory(b) {

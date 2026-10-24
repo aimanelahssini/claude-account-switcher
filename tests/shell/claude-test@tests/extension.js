@@ -264,6 +264,48 @@ async function run() {
     out('DONE');
 }
 
+// TEST_ONLY=switch: with an account's history open, sliding the pointer onto another account
+// opens that one's, whichever account you started from.
+async function switchTest() {
+    let ext;
+    for (let i = 0; i < 40 && !ext?._buttons?.length; i++) {
+        await sleep(500);
+        ext = Main.extensionManager.lookup(UUID)?.stateObj;
+    }
+    Main.overview.hide();
+    await sleep(1000);
+    const pointer = Clutter.get_default_backend().get_default_seat().create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+    const goTo = async b => {
+        const [x, y] = b.get_transformed_position();
+        pointer.notify_absolute_motion(GLib.get_monotonic_time(), x + b.width / 2, y + b.height / 2);
+        await sleep(400);
+    };
+    const press = async button => {
+        pointer.notify_button(GLib.get_monotonic_time(), button, Clutter.ButtonState.PRESSED);
+        await sleep(50);
+        pointer.notify_button(GLib.get_monotonic_time(), button, Clutter.ButtonState.RELEASED);
+        await sleep(600);
+    };
+    const header = b => {
+        const all = a => [a, ...a.get_children().flatMap(all)];
+        return all(b._menu?.box ?? new St.Widget()).find(c => c.has_style_class_name?.('claude-acct-history-name'))?.text;
+    };
+    const [one, two] = ['1', '2'].map(n => ext._buttons.find(b => b._slot === n));
+    for (const [from, to, how] of [[one, two, 'click on the account in use'], [two, one, 'right-click on the other']]) {
+        await goTo(from);
+        await press(how.startsWith('click') ? Clutter.BUTTON_PRIMARY : Clutter.BUTTON_SECONDARY);
+        check(`switch: ${how} opens its history`, !!from._menu?.isOpen && header(from) === from._slot, header(from));
+        await goTo(to);
+        check(`switch: from there, onto account ${to._slot}: its history`, !!to._menu?.isOpen && !from._menu?.isOpen && header(to) === to._slot,
+            `${header(to)} open=${to._menu?.isOpen}`);
+        to._menu?.close();
+        from._menu?.close();
+        pointer.notify_absolute_motion(GLib.get_monotonic_time(), 700, 600);
+        await sleep(500);
+    }
+    out('DONE');
+}
+
 // TEST_ONLY=flashdemo: not a test, a recording for the README: hover the mascot, hover a chat's
 // bar, click it; its window comes forward and the orange frame closes in on it. Frames and a
 // timeline (with where the pointer is) go to $TEST_OUT/demo/.
@@ -690,7 +732,7 @@ async function tokensPanel() {
 export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest, flashdemo: flashDemo}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
+            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest, flashdemo: flashDemo, switch: switchTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
                     for (const pid of standIns)
                         GLib.spawn_command_line_sync(`kill ${pid}`);
