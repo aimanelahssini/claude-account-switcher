@@ -95,6 +95,7 @@ async function run() {
     await shot('busy-tooltip', ext, true);
     tag.hover = false;
 
+    const accounts0 = `${GLib.get_home_dir()}/.claude/accounts`;
     // On long work the word changes now and then (every 3 minutes; 1 second here), never to
     // the same word.
     GLib.unlink(`${BUSY}/0a1b2c3d-test`);
@@ -115,6 +116,18 @@ async function run() {
     check('word: changes on long work', words.length >= 3 && words.every((w, i) => i === 0 || w !== words[i - 1]), words.join(' > '));
     delete ext._wordSeconds;
     GLib.file_set_contents(settings, savedSettings);
+
+    // Words come from a shuffled deck: every word once before any comes back.
+    const deckWords = Array.from({length: 187}, (_, i) => `Word${i}`);
+    const first = Array.from({length: 187}, () => ext._nextVerb(deckWords));
+    const second = Array.from({length: 187}, () => ext._nextVerb(deckWords));
+    check('deck: all 187 before a repeat', new Set(first).size === 187 && new Set(second).size === 187);
+    check('deck: shuffled', first.join() !== deckWords.join() && first.join() !== second.join());
+    check('deck: no repeat across shuffles', first.at(-1) !== second[0]);
+    ext._nextVerb(deckWords);
+    const saved = JSON.parse(new TextDecoder().decode(GLib.file_get_contents(`${accounts0}/.spinner-deck`)[1]));
+    check('deck: kept across restarts', saved.left.length === 186);
+    check('deck: follows the word list', ext._nextVerb(['Only']) === 'Only');
 
     // A heartbeat rewrites the file; that alone mustn't rescan or restart anything.
     const timer = ext._spinTimer;

@@ -280,8 +280,7 @@ export default class ClaudeAccountExtension extends Extension {
         const verbs = this._verbs();
         let word = null, chars, since, sweep = 0, frame = 0;
         const pick = () => {
-            const others = verbs.length > 1 ? verbs.filter(v => `${v}…` !== word) : verbs;
-            word = `${others[Math.floor(Math.random() * others.length)]}…`;
+            word = `${this._nextVerb(verbs)}…`;
             chars = [...word];
             since = GLib.get_monotonic_time();
             sweep = 0;
@@ -306,6 +305,32 @@ export default class ClaudeAccountExtension extends Extension {
             draw();
             return GLib.SOURCE_CONTINUE;
         });
+    }
+
+    // Every word once, in random order, before any comes back: a shuffled deck, kept in a
+    // dotfile so it carries on after a restart. A new shuffle never starts with the last word.
+    _nextVerb(verbs) {
+        const path = GLib.build_filenamev([SLOTS, '.spinner-deck']);
+        let deck = [];
+        try {
+            deck = JSON.parse(this._readFile('.spinner-deck'));
+        } catch {}
+        const known = new Set(verbs);
+        let left = Array.isArray(deck.left) ? deck.left.filter(v => known.has(v)) : [];
+        if (!left.length) {
+            left = [...verbs];
+            for (let i = left.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [left[i], left[j]] = [left[j], left[i]];
+            }
+            if (left.length > 1 && left[0] === deck.last)
+                left.push(left.shift());
+        }
+        const word = left.shift();
+        try {
+            GLib.file_set_contents(path, JSON.stringify({left, last: word}));
+        } catch {}
+        return word;
     }
 
     // Claude Code's own list, with the spinnerVerbs setting applied the same way.

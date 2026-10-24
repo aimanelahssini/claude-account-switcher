@@ -56,8 +56,9 @@ From the terminal: `claude-account keep-awake on|off` and `claude-account auto-s
 
 As soon as you send Claude Code a message, the spinner from your terminal takes the
 mascot's place: the same cycling star, the same orange with its moving glimmer, and a word
-from Claude Code's own list of 187, picked at random each time Claude starts working, and
-a new one every 3 minutes on long work (your `spinnerVerbs` setting counts too). When Claude is done, or waiting for you, the mascot
+from Claude Code's own list of 187, a new one each time Claude starts working and every
+3 minutes on long work (your `spinnerVerbs` setting counts too). They come in random order,
+and you see every word once before any comes back; the order carries on after a restart. When Claude is done, or waiting for you, the mascot
 comes back.
 
 The word is picked separately from the one in your terminal, so the two usually differ:
