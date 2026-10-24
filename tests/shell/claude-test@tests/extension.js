@@ -489,7 +489,7 @@ async function tabsTest() {
     const accel = new Gio.Settings({schema_id: 'org.gnome.Ptyxis.Shortcuts'}).get_string('focus-tab-1');
     check('tabs: and to its tab, with the terminal\'s shortcut', !!ext._pressed?.length, `${accel} -> ${ext._pressed}`);
     check('tabs: an orange frame shows around it', !!ext._flashActor && ext._flashActor.opacity > 0 &&
-        Math.abs(ext._flashActor.x - (windowTitled('✳ Bravo — claude').get_frame_rect().x - 8)) <= 1);
+        Math.abs(ext._flashActor.x - (windowTitled('✳ Bravo — claude').get_frame_rect().x - 3)) <= 1);
     check('tabs: the box closes', !ext._tip.visible);
     await shot('flash', ext);
     const fs = Gio.File.new_for_path(`${OUT}/flash-window.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);

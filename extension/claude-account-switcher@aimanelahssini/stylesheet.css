@@ -88,9 +88,8 @@
 .claude-acct-tab.needs:hover { border-color: #d77757; }
 .claude-acct-tab:focus { border-color: #d77757; }
 
-/* The window a click led to: a soft orange frame that closes in on it, then fades */
-.claude-acct-flash { border: 6px solid rgba(215,119,87,0.22); border-radius: 19px; }
-.claude-acct-flash-line { border: 2px solid #d77757; border-radius: 13px; }
+/* The window a click led to: an orange frame that shows, then fades away */
+.claude-acct-flash { border: 3px solid #d77757; border-radius: 14px; }
 
 /* The mascot's box keeps one width while open; its line sits in the middle */
 .claude-acct-tooltip-text { text-align: center; }

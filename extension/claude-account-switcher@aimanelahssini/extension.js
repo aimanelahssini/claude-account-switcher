@@ -33,9 +33,7 @@ const LED_PATTERNS = {
 };
 const REALIGN_MS = 30000;
 const NAME_CHARS = 20;
-const FLASH_FROM = 14;       // px around the window the orange frame starts from, closing in
-const FLASH_OPACITY = 210;   // at its brightest (of 255)
-const FLASH_GLOW = 6;        // px of faint glow outside the line (the stylesheet's border)
+const FLASH_OPACITY = 180;   // the orange frame at its brightest (of 255): slightly see-through
 const MAX_TIP_WIDTH = 460;   // longer chat names in the mascot's box end in "…"
 const TITLE_TAIL = 512 * 1024;  // bytes at the end of a chat's transcript searched for its title
 // Claude Code's spinner, as it looks in a terminal on Linux: the glyph runs forward then back,
@@ -568,14 +566,11 @@ export default class ClaudeAccountExtension extends Extension {
             this._keyboard.notify_keyval(time(), k, Clutter.KeyState.RELEASED);
     }
 
-    // A soft orange frame that closes in on the window it led to, then fades: you see where
-    // you landed without it shouting.
+    // An orange frame around the window it led to: shows, then fades away. Slightly see-through,
+    // so it marks the spot without being hard on the eyes.
     _flash(win) {
         this._flashActor?.destroy();
-        // A faint wide glow, with the line inside it (a shadow would tint the whole window).
-        const frame = new St.Widget({style_class: 'claude-acct-flash', opacity: 0, reactive: false,
-            layout_manager: new Clutter.BinLayout()});
-        frame.add_child(new St.Widget({style_class: 'claude-acct-flash-line', x_expand: true, y_expand: true}));
+        const frame = new St.Widget({style_class: 'claude-acct-flash', opacity: 0, reactive: false});
         this._flashActor = frame;
         Main.layoutManager.uiGroup.add_child(frame);
         // On another desktop, wait for the switch so the window is where it will be shown.
@@ -584,13 +579,10 @@ export default class ClaudeAccountExtension extends Extension {
             if (this._flashActor !== frame)
                 return GLib.SOURCE_REMOVE;
             const r = win.get_frame_rect();
-            const at = grow => [r.x - grow, r.y - grow, r.width + 2 * grow, r.height + 2 * grow];
-            const [sx, sy, sw, sh] = at(FLASH_FROM + FLASH_GLOW);
-            frame.set_position(sx, sy);
-            frame.set_size(sw, sh);
-            const [x, y, width, height] = at(2 + FLASH_GLOW);
-            frame.ease({x, y, width, height, opacity: FLASH_OPACITY, duration: 180, mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
-                onComplete: () => frame.ease({opacity: 0, delay: 220, duration: 420, mode: Clutter.AnimationMode.EASE_IN_QUAD,
+            frame.set_position(r.x - 3, r.y - 3);
+            frame.set_size(r.width + 6, r.height + 6);
+            frame.ease({opacity: FLASH_OPACITY, duration: 150, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                onComplete: () => frame.ease({opacity: 0, delay: 500, duration: 700, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
                     onComplete: () => {
                         if (this._flashActor === frame)
                             this._flashActor = null;
