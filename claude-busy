@@ -24,6 +24,10 @@ ACCOUNTS="$HOME/.claude/accounts"
 OFF="$ACCOUNTS/keep-awake-off"
 LIGHTS_OFF="$ACCOUNTS/lights-off"
 ASK_OFF="$ACCOUNTS/ask-off"
+# Ask on my phone (`claude-account phone`): set up, and not turned off.
+PHONE="$ACCOUNTS/.phone"
+PHONE_OFF="$ACCOUNTS/phone-off"
+ACCOUNT_CMD=${CLAUDE_ACCOUNT_CMD:-$HOME/.local/bin/claude-account}
 WAIT_SECONDS=${CLAUDE_BUSY_WAIT:-60}        # after the last session is done, before sleep is allowed
 NEEDS_SECONDS=${CLAUDE_BUSY_NEEDS:-900}     # awake for a session that waits for you
 CHECK_SECONDS=${CLAUDE_BUSY_CHECK:-5}
@@ -124,6 +128,17 @@ need() {
     fi
 }
 
+phone_on() {
+    [ -r "$PHONE" ] && [ ! -e "$PHONE_OFF" ]
+}
+
+# The phone's helper, while it has prompts out.
+phoning() {
+    ph=
+    [ -r "$DIR/.phone" ] && read -r ph < "$DIR/.phone"
+    [ -n "$ph" ] && kill -0 "$ph" 2>/dev/null
+}
+
 lid_closed() {
     for f in "$LID"/*/state; do
         [ -r "$f" ] || continue
@@ -205,13 +220,15 @@ ask)
     need permission
     hold_on
     lights
-    [ -e "$ASK_OFF" ] && exit 0
+    [ -e "$ASK_OFF" ] && ! phone_on && exit 0
     A="$DIR/ask"
     [ -d "$A" ] || mkdir -p -m 700 "$A"
     rm -f "$A/$id.fifo"
     mkfifo -m 600 "$A/$id.fifo" || exit 0
     printf '%s\n' "$json" > "$A/$id.json.tmp" && mv "$A/$id.json.tmp" "$A/$id.json"
     echo $$ > "$A/$id.pid"
+    # Your phone gets it too once you're away (one helper for all prompts; it exits when done).
+    phone_on && ! phoning && setsid -f "$ACCOUNT_CMD" phone run < /dev/null > /dev/null 2>&1
     trap 'rm -f "$A/$id.fifo" "$A/$id.pid" "$A/$id.json"; exit 0' TERM INT
     exec 3<> "$A/$id.fifo"
     answer=
@@ -247,6 +264,8 @@ hold)
         if working || needing recent; then
             last=$EPOCHSECONDS
         elif [ $((EPOCHSECONDS - last)) -ge "$WAIT_SECONDS" ]; then
+            # A closed lid sleeps from here: prompts on your phone say so first.
+            lid_closed && phoning && timeout 10 "$ACCOUNT_CMD" phone sleeping
             rm -f "$HOLDER"
             # Claude started again just as the waiting minute ended.
             working || needing recent || break

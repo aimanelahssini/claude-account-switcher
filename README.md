@@ -133,6 +133,7 @@ When a chat stops for a permission prompt, a question or a plan to approve:
 
 <p align="center"><img src="docs/notification.png" width="520" alt="Notification titled listr: Delete pezei.py? — $ rm -f pezei.py, with Yes, Always and No buttons"></p>
 
+- **On your phone:** see [Ask on my phone](#ask-on-my-phone).
 - **Sleep:** a chat that waits for you keeps the computer awake 15 minutes (plus the waiting
   minute), so the lights can tell you; then the lid's normal action runs as usual.
 
@@ -165,6 +166,34 @@ without using the CPU; Claude Code shows the same prompt in the terminal meanwhi
 next hook of that chat (the prompt was answered there) ends the wait. `tests/test_needs.sh`
 and `TEST_ONLY=needs tests/shell/run.sh` check it all with a fake `claude`, fake lights and a
 throwaway GNOME Shell.
+
+## Ask on my phone
+
+While you're away from the laptop (lid closed, or screen locked), permission prompts also go to
+your phone in Telegram, from your own bot: the project, Claude's request as the terminal shows
+it (*Bash command*, the command, its description, *Do you want to proceed?*) and its options
+as buttons: **Yes**, the "don't ask again" or "always allow" option when Claude offers one,
+and **No**. Tap one and Claude goes on, as if you'd answered in the terminal.
+
+The message keeps up with what happens: answered in the terminal or the desktop notification,
+it loses its buttons and says *Answered on the laptop*; when nobody answers and a closed laptop
+goes to sleep (after the 15 minutes), it says *The laptop went to sleep. Open it to answer.*
+before it does, so a tap never goes nowhere.
+
+Set it up once: click the mascot → **Ask on my phone…** (or run `claude-account phone`). In
+Telegram, @BotFather makes you a bot (`/newbot`); paste its token, press **Start** in your
+bot's chat, done. `claude-account phone test` sends you a test prompt. Then the menu has an
+**Ask on my phone** switch.
+
+- Nothing runs while nothing waits. While a prompt waits, one small helper (`claude-account
+  phone run`) checks every 2 seconds whether you're away, and once it has sent prompts, waits
+  for your taps on one connection to Telegram; it ends when no prompt is left. The laptop
+  only ever connects out: nothing is exposed.
+- Only taps from your own chat count, and each prompt has its own one-time code, so an old
+  message can't answer a new prompt. The bot's token is kept in `~/.claude/accounts/.phone`
+  (only you can read it).
+- The prompt's text goes through Telegram, like any message you get there.
+- `tests/test_phone.sh` checks it all against a stand-in for Telegram (`tests/fake-telegram.py`).
 
 ## The 5-hour window, and tokens
 
@@ -234,6 +263,7 @@ From the terminal, `claude-account add NAME --private` does the same with the na
 | `claude-account keep-awake on\|off` | Keep the computer awake while Claude works (on by default) |
 | `claude-account ask on\|off` | Permission prompts as notifications too (on by default) |
 | `claude-account lights on\|off` | Blink the ThinkPad lights (on by default, after `install-lights.sh`) |
+| `claude-account phone` | Set up Ask on my phone (Telegram); `phone test` sends a test prompt, `phone on\|off` |
 | `claude-busy status` | Which Claude Code chats are working or waiting for you |
 | `claude-account add NAME --private` | Sign in to an account in a private browser window |
 | `claude-account add NAME --current` | Save the login Claude Code is using right now |

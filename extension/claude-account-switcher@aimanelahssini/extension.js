@@ -647,6 +647,9 @@ export default class ClaudeAccountExtension extends Extension {
     }
 
     _notifyAsk(id) {
+        // The prompt can be there for the phone only (desktop notifications turned off).
+        if (!this._option('ask'))
+            return;
         let input;
         try {
             input = JSON.parse(readText(GLib.build_filenamev([ASK_DIR, `${id}.json`])));
@@ -951,6 +954,17 @@ export default class ClaudeAccountExtension extends Extension {
             ask.connect('toggled', (item, on) => this._setOption('ask', on));
             menu.addMenuItem(ask);
             menu.addMenuItem(this._hint('Yes, Always or No without going to the terminal'));
+            // On the phone (Telegram), once set up with `claude-account phone`.
+            if (GLib.file_test(GLib.build_filenamev([SLOTS, '.phone']), GLib.FileTest.EXISTS)) {
+                const phone = new PopupMenu.PopupSwitchMenuItem('Ask on my phone', this._option('phone'));
+                phone.connect('toggled', (item, on) => this._setOption('phone', on));
+                menu.addMenuItem(phone);
+                menu.addMenuItem(this._hint('In Telegram, while the lid is closed or the screen locked'));
+            } else {
+                menu.addAction('Ask on my phone…', () => this._inTerminal('phone',
+                    'Ask on my phone is set up. This window closes in 3 seconds.'));
+                menu.addMenuItem(this._hint('Permission prompts in Telegram while you\'re away'));
+            }
             // ThinkPads only; claude-busy can drive them once install-lights.sh has run.
             if (GLib.file_test(`${LEDS}/tpacpi::lid_logo_dot`, GLib.FileTest.IS_DIR)) {
                 const ready = GLib.access(`${LEDS}/tpacpi::lid_logo_dot/pattern`, 2) === 0;
@@ -1584,6 +1598,22 @@ export default class ClaudeAccountExtension extends Extension {
         entry.clutter_text.connect('activate', () => go(true));
         dialog.open();
         entry.clutter_text.set_selection(0, -1);
+    }
+
+    // A claude-account command that talks with you, in a terminal.
+    _inTerminal(args, done) {
+        const cmd = `export PATH="$HOME/.local/bin:$PATH"; ${GLib.shell_quote(SCRIPT)} ${args} && ` +
+            `{ echo; echo ${GLib.shell_quote(done)}; sleep 3; } || { echo; read -rp "Press Enter to close."; }`;
+        const terminal = TERMINALS.find(t => GLib.find_program_in_path(t[0]));
+        if (!terminal) {
+            Main.notify('Claude', `No terminal found. Run: claude-account ${args}`);
+            return;
+        }
+        try {
+            Gio.Subprocess.new([...terminal, 'bash', '-c', cmd], Gio.SubprocessFlags.NONE);
+        } catch (e) {
+            Main.notify('Claude', e.message);
+        }
     }
 
     // The sign-in runs in a terminal so the login can fall back to pasting a code.

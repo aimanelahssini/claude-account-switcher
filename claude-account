@@ -22,8 +22,11 @@ uses the new login on its next request, so the current chat just continues.
                                   too (claude-busy; on by default)
   claude-account ask on|off           permission prompts as notifications too (on by default)
   claude-account lights on|off        blink the ThinkPad lights (after install-lights.sh; on)
+  claude-account phone            set up "Ask on my phone": permission prompts in Telegram, with
+                                  the terminal's options, while the lid is closed or the screen locked
+  claude-account phone on|off|test    turn it on or off, or send yourself a test prompt
 """
-import datetime, fcntl, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
+import datetime, fcntl, json, os, shutil, signal, subprocess, sys, tempfile, time, urllib.request
 
 HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
@@ -43,7 +46,8 @@ LOCK = os.path.join(SLOTS, ".lock")
 OPTION_OFF = {"auto-switch": os.path.join(SLOTS, "auto-switch-off"),
               "keep-awake": os.path.join(SLOTS, "keep-awake-off"),
               "ask": os.path.join(SLOTS, "ask-off"),
-              "lights": os.path.join(SLOTS, "lights-off")}
+              "lights": os.path.join(SLOTS, "lights-off"),
+              "phone": os.path.join(SLOTS, "phone-off")}
 WINDOW_JITTER = 600  # the API's reset time wobbles by a second or so between readings
 # Tokens per account (tokens.cache), from Claude Code's own transcripts on this computer, in 10-minute steps:
 # {"step": 600, "accounts": {name: {step start: [tokens, cache reads]}}}. "tokens" is input +
@@ -56,6 +60,14 @@ PROJECTS = os.path.join(CLAUDE_DIR, "projects")
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+# Ask on my phone: your own Telegram bot's token and your chat with it ({"token", "chat"}).
+PHONE = os.path.join(SLOTS, ".phone")
+PHONE_API = os.environ.get("CLAUDE_PHONE_API", "https://api.telegram.org")  # tests use a stand-in
+BUSY_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "claude-busy")
+ASK_DIR = os.path.join(BUSY_DIR, "ask")
+PHONE_PID = os.path.join(BUSY_DIR, ".phone")
+BUSY_CMD = os.environ.get("CLAUDE_BUSY_CMD") or os.path.join(HOME, ".local", "bin", "claude-busy")
+LID = os.environ.get("CLAUDE_BUSY_LID", "/proc/acpi/button/lid")
 
 
 def read_json(path):
@@ -566,6 +578,277 @@ def init(new_names):
     print("Rename one with: claude-account rename OLD NEW")
 
 
+# ---- Ask on my phone ----------------------------------------------------------------------
+# While a permission prompt waits and you're away (lid closed or screen locked), your own
+# Telegram bot sends it to you with the terminal's options as buttons. A tap answers Claude
+# (through claude-busy, like the top bar's notification); answered elsewhere, or when the laptop
+# goes to sleep, the message loses its buttons and says so. One `phone run` serves every
+# waiting prompt (Telegram allows one listener per bot) and exits when none are left.
+
+def telegram(method, token, **params):
+    body = json.dumps(params).encode()
+    req = urllib.request.Request(f"{PHONE_API}/bot{token}/{method}", body, {"Content-Type": "application/json"})
+    timeout = params.get("timeout", 0) + 15
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        out = json.load(r)
+    if not out.get("ok"):
+        raise RuntimeError(out.get("description", "Telegram said no"))
+    return out["result"]
+
+
+def phone_config():
+    try:
+        cfg = read_json(PHONE)
+        return cfg if cfg.get("token") and cfg.get("chat") else None
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def away():
+    """The lid is closed or the screen is locked."""
+    try:
+        for name in os.listdir(LID):
+            with open(os.path.join(LID, name, "state")) as f:
+                if f.read().split()[-1] == "closed":
+                    return True
+    except (OSError, IndexError):
+        pass
+    forced = os.environ.get("CLAUDE_BUSY_LOCKED")  # tests
+    if forced is not None:
+        return forced == "1"
+    try:
+        out = subprocess.run(["gdbus", "call", "--session", "--dest", "org.gnome.ScreenSaver", "--object-path",
+                              "/org/gnome/ScreenSaver", "--method", "org.gnome.ScreenSaver.GetActive"],
+                             capture_output=True, text=True, timeout=3).stdout
+        return "true" in out
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def html(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def home_short(path):
+    return "~" + path[len(HOME):] if path and (path == HOME or path.startswith(HOME + "/")) else path or ""
+
+
+def prompt_options(request):
+    """The terminal's options for this prompt: [(label, decision)]. Claude Code's own wording;
+    its "switch to auto mode" is left out (a mode, not an answer)."""
+    suggestions = [x for x in request.get("permission_suggestions") or [] if x.get("type") != "setMode"]
+    rules = [r.get("ruleContent") or r.get("toolName", "") for x in suggestions if x.get("type") == "addRules"
+             for r in x.get("rules", [])]
+    rules = [r[:-2] if r.endswith(":*") else r for r in rules]
+    dirs = [home_short(d) for x in suggestions if x.get("type") == "addDirectories" for d in x.get("directories", [])]
+    options = [("Yes", {"behavior": "allow"})]
+    always = None
+    if rules and not dirs:
+        always = f"Yes, and don't ask again for {', '.join(rules)} commands in {home_short(request.get('cwd', ''))}"
+    elif dirs and not rules:
+        always = f"Yes, and always allow access to {', '.join(dirs)} from this project"
+    elif dirs and rules:
+        always = (f"Yes, and allow access to {dirs[0]} and {rules[0]} commands" if len(dirs) == 1 and len(rules) == 1
+                  else f"Yes, and allow {', '.join(dirs)} access and {', '.join(rules)} commands")
+    if always:
+        options.append((always, {"behavior": "allow", "updatedPermissions": suggestions}))
+    options.append(("No", {"behavior": "deny", "message": "The user said no (from their phone).", "interrupt": True}))
+    return options
+
+
+def prompt_text(request):
+    """The prompt as the terminal shows it, for Telegram (HTML)."""
+    tool, inp = request.get("tool_name", ""), request.get("tool_input") or {}
+    cwd = request.get("cwd") or HOME
+    project = os.path.basename(cwd) if cwd != HOME else "Claude Code"
+    if tool == "Bash":
+        title, body = "Bash command", [f"<pre>{html(inp.get('command', ''))}</pre>", html(inp.get("description", ""))]
+    elif tool in ("Edit", "MultiEdit", "Write", "NotebookEdit"):
+        path = inp.get("file_path") or inp.get("notebook_path") or ""
+        change = inp.get("new_string") or inp.get("content") or inp.get("new_source") or ""
+        preview = "\n".join(change.splitlines()[:12])
+        title, body = ("Create file" if tool == "Write" and not os.path.exists(path) else "Edit file"), \
+            [f"<code>{html(home_short(path))}</code>"] + ([f"<pre>{html(preview)}</pre>"] if preview else [])
+    elif tool == "Read":
+        title, body = "Read file", [f"<code>{html(home_short(inp.get('file_path', '')))}</code>"]
+    elif tool == "WebFetch":
+        title, body = "Fetch", [html(inp.get("url", ""))]
+    elif tool == "WebSearch":
+        title, body = "Web search", [html(inp.get("query", ""))]
+    else:
+        title, body = tool, [f"<pre>{html(json.dumps(inp, indent=1)[:600])}</pre>"]
+    options = "\n".join(f"{i}. {html(label)}" for i, (label, _) in enumerate(prompt_options(request), 1))
+    return "\n".join([f"<b>{html(project)}</b>", f"<b>{html(title)}</b>", *[b for b in body if b],
+                      "", "Do you want to proceed?", options])
+
+
+def phone_running():
+    try:
+        with open(PHONE_PID) as f:
+            os.kill(int(f.read()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def phone_run():
+    """Serves every waiting prompt: sends it when you're away, waits for your tap, updates it."""
+    cfg = phone_config()
+    if not cfg or phone_running():
+        return
+    with open(PHONE_PID, "w") as f:
+        f.write(f"{os.getpid()}\n")
+    token, chat = cfg["token"], cfg["chat"]
+    sent = {}       # session -> {"message", "nonce", "text", "options"}
+    offset = None
+
+    def sleeping(*_):
+        raise SystemExit("sleeping")
+    signal.signal(signal.SIGTERM, sleeping)   # `phone sleeping`: the laptop is about to sleep
+    try:
+        while True:
+            waiting = {n[:-5] for n in os.listdir(ASK_DIR) if n.endswith(".json")} if os.path.isdir(ASK_DIR) else set()
+            # Answered in the terminal or the desktop notification (or the chat went away).
+            for sid in [s for s in sent if s not in waiting]:
+                m = sent.pop(sid)
+                edit(token, chat, m, "✓ Answered on the laptop")
+            # New prompts go out once you're away.
+            new = [s for s in waiting if s not in sent]
+            if new and away():
+                for sid in new:
+                    try:
+                        request = read_json(os.path.join(ASK_DIR, f"{sid}.json"))
+                    except (OSError, ValueError):
+                        continue
+                    nonce = os.urandom(6).hex()
+                    options = prompt_options(request)
+                    text = prompt_text(request)
+                    keyboard = [[{"text": f"{i}. {label}", "callback_data": f"{nonce}:{i}"}]
+                                for i, (label, _) in enumerate(options, 1)]
+                    msg = telegram("sendMessage", token, chat_id=chat, text=text, parse_mode="HTML",
+                                   reply_markup={"inline_keyboard": keyboard})
+                    sent[sid] = {"message": msg["message_id"], "nonce": nonce, "text": text, "options": options}
+            if not waiting and not sent:
+                return
+            if not sent:
+                time.sleep(2)
+                continue
+            # Your taps (long polling: Telegram answers at once when you tap).
+            try:
+                updates = telegram("getUpdates", token, timeout=10, offset=offset, allowed_updates=["callback_query"])
+            except (OSError, RuntimeError):
+                time.sleep(3)
+                continue
+            for u in updates:
+                offset = u["update_id"] + 1
+                q = u.get("callback_query") or {}
+                nonce, _, pick = (q.get("data") or "").partition(":")
+                sid = next((s for s, m in sent.items() if m["nonce"] == nonce), None)
+                # Only your chat's taps, on a prompt that's still waiting.
+                if str(q.get("from", {}).get("id")) != str(chat) or sid is None or not pick.isdigit():
+                    if q.get("id"):
+                        telegram("answerCallbackQuery", token, callback_query_id=q["id"], text="This prompt is gone")
+                    continue
+                m = sent.pop(sid)
+                label, decision = m["options"][int(pick) - 1]
+                answer = {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
+                done = subprocess.run([BUSY_CMD, "answer", sid], input=json.dumps(answer) + "\n", text=True).returncode == 0
+                telegram("answerCallbackQuery", token, callback_query_id=q["id"])
+                edit(token, chat, m, f"✓ {pick}. {label}" if done else "✓ Answered on the laptop")
+    except SystemExit:
+        # Your taps can't reach it while it sleeps: the messages say so, without their buttons.
+        for m in sent.values():
+            edit(token, chat, m, "The laptop went to sleep. Open it to answer.")
+    finally:
+        try:
+            os.remove(PHONE_PID)
+        except OSError:
+            pass
+
+
+def edit(token, chat, m, status):
+    """The sent prompt without its buttons, with what became of it."""
+    try:
+        telegram("editMessageText", token, chat_id=chat, message_id=m["message"], parse_mode="HTML",
+                 text=f"{m['text']}\n\n<b>{html(status)}</b>")
+    except (OSError, RuntimeError):
+        pass
+
+
+def phone_sleeping():
+    """The laptop is about to sleep: prompts sent to the phone can't be answered from there now."""
+    cfg = phone_config()
+    if not cfg:
+        return
+    try:
+        with open(PHONE_PID) as f:
+            pid = int(f.read())
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ValueError):
+        return
+    # Its messages are updated before the laptop goes to sleep.
+    for _ in range(80):
+        if not os.path.exists(PHONE_PID):
+            return
+        time.sleep(0.1)
+
+
+def phone_setup():
+    print("Ask on my phone: permission prompts in Telegram while you're away from the laptop.\n")
+    print("1. In Telegram, open @BotFather, send /newbot and pick a name and a username.")
+    token = input("2. Paste the token it gives you here: ").strip()
+    try:
+        me = telegram("getMe", token)
+    except (OSError, RuntimeError) as e:
+        sys.exit(f"That token didn't work ({e}).")
+    print(f"3. Now open t.me/{me['username']} on your phone and press Start (waiting 3 minutes)...")
+    offset, deadline = None, time.time() + 180
+    while time.time() < deadline:
+        for u in telegram("getUpdates", token, timeout=20, offset=offset):
+            offset = u["update_id"] + 1
+            msg = u.get("message") or {}
+            if msg.get("text", "").startswith("/start"):
+                chat = msg["chat"]["id"]
+                write_json(PHONE, {"token": token, "chat": chat}, mode=0o600)
+                set_option("phone", True)
+                telegram("getUpdates", token, offset=offset, timeout=0)
+                telegram("sendMessage", token, chat_id=chat,
+                         text="Connected. When Claude needs you and the laptop's lid is closed or its screen locked, "
+                              "it asks you here.")
+                print("Connected. Try it with: claude-account phone test")
+                return
+    sys.exit("No /start came in. Run claude-account phone again.")
+
+
+def phone_test():
+    cfg = phone_config()
+    if not cfg:
+        sys.exit("Not set up yet: run claude-account phone")
+    request = {"tool_name": "Bash", "cwd": os.path.join(HOME, "Projects", "example"),
+               "tool_input": {"command": "rm -f pezei.py", "description": "Delete pezei.py"},
+               "permission_suggestions": [{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "rm -f pezei.py"}],
+                                           "behavior": "allow", "destination": "localSettings"}]}
+    options = prompt_options(request)
+    text = "<i>A test, nothing will run.</i>\n" + prompt_text(request)
+    keyboard = [[{"text": f"{i}. {label}", "callback_data": f"test:{i}"}] for i, (label, _) in enumerate(options, 1)]
+    m = telegram("sendMessage", cfg["token"], chat_id=cfg["chat"], text=text, parse_mode="HTML",
+                 reply_markup={"inline_keyboard": keyboard})
+    print("Sent. Tap an option on your phone (waiting a minute)...")
+    offset, deadline = None, time.time() + 60
+    while time.time() < deadline:
+        for u in telegram("getUpdates", cfg["token"], timeout=15, offset=offset, allowed_updates=["callback_query"]):
+            offset = u["update_id"] + 1
+            q = u.get("callback_query") or {}
+            if (q.get("data") or "").startswith("test:"):
+                pick = int(q["data"].split(":")[1])
+                telegram("answerCallbackQuery", cfg["token"], callback_query_id=q["id"])
+                edit(cfg["token"], cfg["chat"], {"message": m["message_id"], "text": text}, f"✓ {pick}. {options[pick - 1][0]}")
+                print(f"You tapped: {options[pick - 1][0]}")
+                return
+    edit(cfg["token"], cfg["chat"], {"message": m["message_id"], "text": text}, "No answer")
+    sys.exit("No tap came in.")
+
+
 def main():
     a = sys.argv[1:]
     if not a or a[0] == "current":
@@ -590,6 +873,14 @@ def main():
             switch(a[1])
     elif a[0] == "usage":
         usage()
+    elif a[0] == "phone" and len(a) == 1:
+        phone_setup()
+    elif a[0] == "phone" and a[1] == "test":
+        phone_test()
+    elif a[0] == "phone" and a[1] == "run":
+        phone_run()
+    elif a[0] == "phone" and a[1] == "sleeping":
+        phone_sleeping()
     elif a[0] in OPTION_OFF and len(a) <= 2:
         if len(a) == 2:
             if a[1] not in ("on", "off"):
