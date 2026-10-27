@@ -197,6 +197,38 @@ function barText(chat) {
     return `${chat.title} · ${{idle: 'idle', working: 'working', needs: 'needs you'}[chat.state]}`;
 }
 
+// "Turn off when Claude is done": a menu row with a round button that lights up while it's set,
+// like Quick Settings' buttons. Clicking it (or the row) flips it and leaves the menu open.
+const OffItem = GObject.registerClass({
+    Signals: {'toggled': {param_types: [GObject.TYPE_BOOLEAN]}},
+}, class OffItem extends PopupMenu.PopupBaseMenuItem {
+    _init(gicon, checked) {
+        super._init({style_class: 'claude-acct-off-item'});
+        this.label = new St.Label({text: 'Turn off when Claude is done', x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+        this.add_child(this.label);
+        this.button = new St.Button({style_class: 'claude-acct-off-button', can_focus: false, toggle_mode: true,
+            child: new St.Icon({gicon, style_class: 'claude-acct-off-button-icon'}), y_align: Clutter.ActorAlign.CENTER,
+            accessible_name: 'Turn off when Claude is done'});
+        this.button.connect('clicked', () => this.emit('toggled', this.button.checked));
+        this.add_child(this.button);
+        this.setChecked(checked);
+    }
+
+    setChecked(on) {
+        this.button.checked = on;
+    }
+
+    get checked() {
+        return this.button.checked;
+    }
+
+    activate() {
+        // Not the usual "do it and close": flip, and stay so you see the button change.
+        this.button.checked = !this.button.checked;
+        this.emit('toggled', this.button.checked);
+    }
+});
+
 function label(n) {
     return n === '-' ? '−' : n;
 }
@@ -983,13 +1015,23 @@ export default class ClaudeAccountExtension extends Extension {
             menu.addMenuItem(this._hint('No sleep until it\'s done, even with the lid closed'));
             // A one-time thing, until it turns the computer off (or you take it back, or it
             // restarts). claude-busy's holder does the waiting, so it works locked and lid closed.
-            if (offWhenDone) {
-                menu.addAction('Don\'t turn off when done', () => this._runBusy('off-when-done', 'off'));
-                menu.addMenuItem(this._hint('Set: turns off once every chat has really finished'));
-            } else {
-                menu.addAction('Turn off when Claude is done', () => this._runBusy('off-when-done', 'on'));
-                menu.addMenuItem(this._hint('Once every chat has really finished, after a minute\'s warning'));
-            }
+            // A round button that lights up when it's set; the menu stays open so you see it.
+            const off = new OffItem(Gio.FileIcon.new(this.dir.get_child('icons').get_child('power-clock-symbolic.svg')),
+                offWhenDone);
+            const offHint = this._hint('');
+            const showOff = set => {
+                off.setChecked(set);
+                offHint.label.text = set ? 'Set: turns off once every chat has really finished'
+                    : 'Once every chat has really finished, after a minute\'s warning';
+            };
+            showOff(offWhenDone);
+            off.connect('toggled', (item, set) => {
+                showOff(set);
+                this._runBusy('off-when-done', set ? 'on' : 'off');
+            });
+            this._offItem = off;   // tests read it
+            menu.addMenuItem(off);
+            menu.addMenuItem(offHint);
             const auto = new PopupMenu.PopupSwitchMenuItem('Switch accounts at 100%', this._option('auto-switch'));
             auto.connect('toggled', (item, on) => {
                 this._setOption('auto-switch', on);

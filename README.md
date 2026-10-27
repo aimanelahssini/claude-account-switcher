@@ -45,13 +45,13 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 Click the mascot (or right-click it) to turn any of these off or back on. The switches are on
 by default.
 
-<p align="center"><img src="docs/options.png" width="420" alt="Menu under the mascot, with the grey power-and-clock icon next to it in the top bar: switches for staying awake, switching accounts at 100%, permission prompts as notifications and the ThinkPad lights, and the buttons Don't turn off when done and Ask on my phone"></p>
+<p align="center"><img src="docs/options.png" width="420" alt="Menu under the mascot, with the grey power-and-clock icon next to it in the top bar: switches for staying awake, switching accounts at 100%, permission prompts as notifications and the ThinkPad lights, the round Turn off when Claude is done button lit in orange, and Ask on my phone"></p>
 
 - **Stay awake while Claude works:** see [While Claude works](#while-claude-works).
-- **Turn off when Claude is done** (a button, for this once): the computer turns off once every
-  chat has really finished, and stays on until then, lid closed too. While it's set, a grey
-  power symbol with a clock sits next to the mascot, and the button reads **Don't turn off
-  when done**. "Finished" means, for every chat: not
+- **Turn off when Claude is done** (for this once): click the round button on its row and it
+  lights up orange (click again to take it back; the menu stays open so you see it). The
+  computer turns off once every chat has really finished, and stays on until then, lid closed
+  too. While it's set, a grey power symbol with a clock sits next to the mascot. "Finished" means, for every chat: not
   working (Claude Code's own status says idle), no command it started still running (a
   background job, a monitor), and not waiting for you (a permission prompt or a question);
   and all of that for 3 minutes in a row, so a pause between two steps doesn't count. Then a

@@ -96,3 +96,13 @@
 
 /* Set to turn off when Claude is done: a grey power symbol with a clock, next to the mascot */
 .claude-acct-off-icon { icon-size: 15px; color: rgba(255,255,255,0.55); }
+
+/* Turn off when Claude is done: a round button that lights up (orange) while it's set */
+.claude-acct-off-button {
+  width: 32px; height: 32px; border-radius: 99px;
+  background-color: rgba(255,255,255,0.1); color: rgba(255,255,255,0.75);
+}
+.claude-acct-off-button:hover { background-color: rgba(255,255,255,0.17); }
+.claude-acct-off-button:checked { background-color: #d77757; color: #fff; }
+.claude-acct-off-button:checked:hover { background-color: #e08a6d; }
+.claude-acct-off-button-icon { icon-size: 16px; }

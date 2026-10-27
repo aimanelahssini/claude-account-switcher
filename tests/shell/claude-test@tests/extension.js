@@ -279,25 +279,39 @@ async function offTest() {
     const exists = name => GLib.file_test(`${busy}/${name}`, GLib.FileTest.EXISTS);
     ext._tag.emit('clicked', 3);
     await sleep(700);
-    const button = text => ext._options._getMenuItems().find(i => i.label?.text === text);
-    const item = button('Turn off when Claude is done');
-    check('off: a button in the menu (not a switch)', !!item && !item._switch);
+    const pointer = Clutter.get_default_backend().get_default_seat().create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+    const click = async actor => {
+        const [x, y] = actor.get_transformed_position();
+        pointer.notify_absolute_motion(GLib.get_monotonic_time(), x + actor.width / 2, y + actor.height / 2);
+        await sleep(200);
+        pointer.notify_button(GLib.get_monotonic_time(), Clutter.BUTTON_PRIMARY, Clutter.ButtonState.PRESSED);
+        await sleep(50);
+        pointer.notify_button(GLib.get_monotonic_time(), Clutter.BUTTON_PRIMARY, Clutter.ButtonState.RELEASED);
+        await sleep(700);
+    };
+    const item = ext._offItem;
+    check('off: a round button in the menu, not lit', !!item && !item.checked && !item.button.has_style_pseudo_class('checked'));
     check('off: no icon in the top bar yet', !ext._offIcon.visible);
-    item.emit('activate', null);
-    await sleep(800);
-    check('off: pressing it tells claude-busy', exists('.off-when-done'));
+    await click(item.button);
+    check('off: clicking it lights it up, the menu stays open', item.checked && item.button.has_style_pseudo_class('checked') &&
+        ext._options.isOpen);
+    check('off: and tells claude-busy', exists('.off-when-done'));
     check('off: a grey power-and-clock icon next to the mascot', ext._offIcon.visible && ext._offIcon.get_parent() === ext._mascot.get_parent());
+    await shot('off-menu-set', ext, false, ext._options.actor);
+    await click(item.label);
+    check('off: clicking the row takes it back', !item.checked && !exists('.off-when-done') && ext._options.isOpen && !ext._offIcon.visible);
+    await shot('off-menu-unset', ext, false, ext._options.actor);
+    await click(item.button);
+    check('off: set again', item.checked && exists('.off-when-done'));
+    ext._options.close();
+    pointer.notify_absolute_motion(GLib.get_monotonic_time(), 700, 600);
+    await sleep(400);
     ext._tag.hover = true;
     await sleep(300);
     check('off: the hover text says so', ext._tooltip.text.endsWith('· turns off when done'), ext._tooltip.text);
     ext._tag.hover = false;
     await shot('off-icon', ext);
-    ext._tag.emit('clicked', 3);
-    await sleep(700);
-    check('off: the button now takes it back', !!button('Don\'t turn off when done'));
-    await shot('off-menu-set', ext, false, ext._options.actor);
-    ext._options.close();
-    await sleep(400);
+
     // Every chat finished: claude-busy's minute of warning.
     GLib.file_set_contents(`${busy}/.off-at`, `${Math.floor(Date.now() / 1000) + 60}\n`);
     await sleep(800);
@@ -322,7 +336,7 @@ async function offTest() {
     check('off: warning withdrawn when it no longer applies', !!n2 && !ext._offNotice);
     ext._tag.emit('clicked', 3);
     await sleep(700);
-    check('off: the button is back to turning it on', !!button('Turn off when Claude is done'));
+    check('off: the button is unlit again', !ext._offItem.checked);
     await shot('off-menu', ext, false, ext._options.actor);
     ext._options.close();
     out('DONE');
