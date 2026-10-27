@@ -347,7 +347,7 @@ export default class ClaudeAccountExtension extends Extension {
         this._titles = new Map();   // transcript -> chat title
         this._asks = new Map();     // session -> notification
         this._dirMonitors = [];
-        for (const [dir, sync] of [[BUSY_DIR, () => this._syncBusy()], [NEEDS_DIR, () => this._syncBusy()],
+        for (const [dir, sync] of [[BUSY_DIR, () => { this._syncBusy(); this._syncOffAt(); }], [NEEDS_DIR, () => this._syncBusy()],
             [ASK_DIR, () => this._syncAsks()]]) {
             GLib.mkdir_with_parents(dir, 0o700);
             const monitor = Gio.File.new_for_path(dir).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
@@ -361,11 +361,12 @@ export default class ClaudeAccountExtension extends Extension {
         }
         this._syncBusy();
         this._syncAsks();
+        this._syncOffAt();
         this._watchSessions();
         // Our banners open expanded, with their Yes / Always / No buttons showing.
         Main.messageTray.connectObject('queue-changed', () => GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             const tray = Main.messageTray;
-            if (tray._banner && !tray._banner.expanded && [...this._asks?.values() ?? []].includes(tray._notification))
+            if (tray._banner && !tray._banner.expanded && [...this._asks?.values() ?? [], this._offNotice].includes(tray._notification))
                 tray._banner.expand(false);
             return GLib.SOURCE_REMOVE;
         }), this);
@@ -388,6 +389,8 @@ export default class ClaudeAccountExtension extends Extension {
         this._blink(false);
         for (const n of this._asks?.values() ?? [])
             n.destroy();
+        this._offNotice?.destroy();
+        this._offNotice = null;
         this._asks = new Map();
         this._source?.destroy();
         this._source = null;
@@ -629,6 +632,36 @@ export default class ClaudeAccountExtension extends Extension {
                 stream.close(null);
             } catch {}
         }
+    }
+
+    // ---- turn off when Claude is done -------------------------------------------------
+    // claude-busy writes .off-at when every chat has really finished: a minute's warning, with
+    // Cancel and Turn off now, gone again if it's cancelled or a chat starts again.
+    _syncOffAt() {
+        const pending = GLib.file_test(GLib.build_filenamev([BUSY_DIR, '.off-at']), GLib.FileTest.EXISTS);
+        if (!pending) {
+            this._offNotice?.destroy();
+            this._offNotice = null;
+            return;
+        }
+        if (this._offNotice)
+            return;
+        if (!this._source) {
+            this._source = new MessageTray.Source({title: 'Claude Code',
+                icon: Gio.FileIcon.new(this.dir.get_child('icons').get_child('claude-code.svg'))});
+            this._source.connect('destroy', () => { this._source = null; });
+            Main.messageTray.add(this._source);
+        }
+        const n = new MessageTray.Notification({source: this._source, title: 'Claude is done',
+            body: 'Every chat has finished. The computer turns off in a minute.', urgency: MessageTray.Urgency.CRITICAL});
+        n.addAction('Cancel', () => this._runBusy('off-when-done', 'off'));
+        n.addAction('Turn off now', () => this._runBusy('off-when-done', 'now'));
+        n.connect('destroy', () => {
+            if (this._offNotice === n)
+                this._offNotice = null;
+        });
+        this._offNotice = n;
+        this._source.addNotification(n);
     }
 
     // ---- permission prompts as notifications ----------------------------------------
@@ -935,6 +968,7 @@ export default class ClaudeAccountExtension extends Extension {
             menu.removeAll();
             const status = new PopupMenu.PopupMenuItem(this._needs.length ? 'Claude needs you'
                 : this._busy ? 'Claude is working' : 'Claude is idle', {reactive: false, can_focus: false});
+            const offWhenDone = GLib.file_test(GLib.build_filenamev([BUSY_DIR, '.off-when-done']), GLib.FileTest.EXISTS);
             status.label.add_style_class_name('claude-acct-menu-status');
             menu.addMenuItem(status);
             menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -942,6 +976,12 @@ export default class ClaudeAccountExtension extends Extension {
             awake.connect('toggled', (item, on) => this._setOption('keep-awake', on));
             menu.addMenuItem(awake);
             menu.addMenuItem(this._hint('No sleep until it\'s done, even with the lid closed'));
+            // Until you turn it off or the computer restarts (claude-busy's holder does the waiting,
+            // so it works with the screen locked and the lid closed).
+            const off = new PopupMenu.PopupSwitchMenuItem('Turn off when Claude is done', offWhenDone);
+            off.connect('toggled', (item, on) => this._runBusy('off-when-done', on ? 'on' : 'off'));
+            menu.addMenuItem(off);
+            menu.addMenuItem(this._hint('Once every chat has really finished, after a minute\'s warning'));
             const auto = new PopupMenu.PopupSwitchMenuItem('Switch accounts at 100%', this._option('auto-switch'));
             auto.connect('toggled', (item, on) => {
                 this._setOption('auto-switch', on);

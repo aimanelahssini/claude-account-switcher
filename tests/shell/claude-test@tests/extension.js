@@ -168,17 +168,18 @@ async function run() {
     await sleep(1200);
     const items = ext._options._getMenuItems();
     const switches = items.filter(i => i._switch);
-    check('options: menu open', ext._options.isOpen && switches.length === 4,
+    check('options: menu open', ext._options.isOpen && switches.length === 5,
         items.map(i => i.label?.text).filter(Boolean).join(' | '));
-    check('options: both on by default', switches.every(i => i.state));
+    const named = text => switches.find(i => i.label.text === text);
+    check('options: on by default, but turning off when done', switches.every(i => i.state === (i.label.text !== 'Turn off when Claude is done')));
     await shot('options', ext, false, ext._options.actor);
-    switches[0].toggle();
+    named('Stay awake while Claude works').toggle();
     check('options: keep-awake off file', GLib.file_test(`${accounts}/keep-awake-off`, GLib.FileTest.EXISTS));
-    switches[0].toggle();
+    named('Stay awake while Claude works').toggle();
     check('options: keep-awake on again', !GLib.file_test(`${accounts}/keep-awake-off`, GLib.FileTest.EXISTS));
-    switches[1].toggle();
+    named('Switch accounts at 100%').toggle();
     check('options: auto-switch off file', GLib.file_test(`${accounts}/auto-switch-off`, GLib.FileTest.EXISTS));
-    switches[1].toggle();
+    named('Switch accounts at 100%').toggle();
     ext._options.close();
     await sleep(400);
 
@@ -261,6 +262,56 @@ async function run() {
     const b2 = ext._buttons.find(b => b._slot === '2');
     check('ended window: 0%', b2._pct.text === '0%', b2._pct.text);
     check('ended window: says so', ext._resetText('2').startsWith('Limit reset at'), ext._resetText('2'));
+    out('DONE');
+}
+
+// TEST_ONLY=off: Turn off when Claude is done, from the menu; the minute's warning with Cancel
+// and Turn off now (claude-busy decides when; here its files are written by hand).
+async function offTest() {
+    let ext;
+    for (let i = 0; i < 40 && !ext?._buttons?.length; i++) {
+        await sleep(500);
+        ext = Main.extensionManager.lookup(UUID)?.stateObj;
+    }
+    Main.overview.hide();
+    await sleep(800);
+    const busy = `${GLib.get_user_runtime_dir()}/claude-busy`;
+    const exists = name => GLib.file_test(`${busy}/${name}`, GLib.FileTest.EXISTS);
+    ext._tag.emit('clicked', 3);
+    await sleep(700);
+    const item = ext._options._getMenuItems().find(i => i.label?.text === 'Turn off when Claude is done');
+    check('off: a switch in the menu, off', !!item && !item.state);
+    item.toggle();
+    await sleep(800);
+    check('off: turning it on tells claude-busy', exists('.off-when-done'));
+    ext._options.close();
+    await sleep(400);
+    // Every chat finished: claude-busy's minute of warning.
+    GLib.file_set_contents(`${busy}/.off-at`, `${Math.floor(Date.now() / 1000) + 60}\n`);
+    await sleep(800);
+    const n = ext._offNotice;
+    check('off: the warning', n?.title === 'Claude is done' && /turns off in a minute/.test(n?.body), `${n?.title}: ${n?.body}`);
+    check('off: Cancel and Turn off now, showing', n?.actions.map(a => a.label).join() === 'Cancel,Turn off now' &&
+        Main.messageTray._banner?.expanded === true);
+    await shot('off-warning', ext);
+    const fs = Gio.File.new_for_path(`${OUT}/off-notice.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
+    await new Shell.Screenshot().screenshot_area(global.stage.width / 2 - 260, 0, 520, 200, fs);
+    fs.close(null);
+    n.actions.find(a => a.label === 'Cancel').activate();
+    await sleep(1000);
+    check('off: Cancel turns it off', !exists('.off-when-done') && !exists('.off-at') && !ext._offNotice);
+    // A chat starting again: claude-busy drops the warning, the notification goes with it.
+    GLib.file_set_contents(`${busy}/.off-at`, '1\n');
+    await sleep(600);
+    const n2 = ext._offNotice;
+    GLib.unlink(`${busy}/.off-at`);
+    await sleep(600);
+    check('off: warning withdrawn when it no longer applies', !!n2 && !ext._offNotice);
+    ext._tag.emit('clicked', 3);
+    await sleep(700);
+    check('off: the switch shows it off again', !ext._options._getMenuItems().find(i => i.label?.text === 'Turn off when Claude is done').state);
+    await shot('off-menu', ext, false, ext._options.actor);
+    ext._options.close();
     out('DONE');
 }
 
@@ -722,7 +773,7 @@ async function needsTest() {
     const items = ext._options._getMenuItems().filter(i => i._switch);
     check('menu: notifications and lights switches', items.map(i => i.label.text).join(' | ').includes('Permission prompts as notifications | Blink the ThinkPad lights'),
         items.map(i => i.label.text).join(' | '));
-    check('menu: on by default', items.every(i => i.state));
+    check('menu: on by default (but turning off when done)', items.every(i => i.state === (i.label.text !== 'Turn off when Claude is done')));
     await shot('options', ext, false, ext._options.actor);
     ext._options.close();
     out('DONE');
@@ -755,7 +806,7 @@ async function tokensPanel() {
 export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest, flashdemo: flashDemo, switch: switchTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
+            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest, flashdemo: flashDemo, switch: switchTest, off: offTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
                     for (const pid of standIns)
                         GLib.spawn_command_line_sync(`kill ${pid}`);

@@ -7,6 +7,7 @@
 #   TEST_ONLY=tabs run.sh            only the row of chats under the mascot's hover text
 #   TEST_ONLY=edge run.sh            only: the top bar buttons answer up to the screen edge
 #   TEST_ONLY=switch run.sh          only: sliding from one account's history onto another
+#   TEST_ONLY=off run.sh             only: Turn off when Claude is done (menu switch, the warning)
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"

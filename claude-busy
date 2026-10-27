@@ -7,6 +7,8 @@
 #   claude-busy ask      a permission prompt: waits for an answer from the notification
 #   claude-busy answer SESSION   (the top bar) passes that answer on, read from stdin
 #   claude-busy lights   puts the lights in line with the switches
+#   claude-busy off-when-done on|off|now   turn the computer off once every chat has really
+#                        finished (the top bar's menu); `now` skips the last minute's warning
 #   claude-busy status
 # Working sessions are files in $XDG_RUNTIME_DIR/claude-busy holding their claude process id;
 # sessions that wait for you are in its needs/ folder, permission prompts in ask/.
@@ -28,6 +30,12 @@ ASK_OFF="$ACCOUNTS/ask-off"
 PHONE="$ACCOUNTS/.phone"
 PHONE_OFF="$ACCOUNTS/phone-off"
 ACCOUNT_CMD=${CLAUDE_ACCOUNT_CMD:-$HOME/.local/bin/claude-account}
+# Turn off when Claude is done: until the computer restarts, or you turn it off again.
+OFF_WHEN_DONE="$DIR/.off-when-done"
+OFF_AT="$DIR/.off-at"                         # the moment it turns off (the top bar warns you)
+QUIET_SECONDS=${CLAUDE_BUSY_QUIET:-180}       # everything finished this long, not just a pause
+OFF_WARN_SECONDS=${CLAUDE_BUSY_OFF_WARN:-60}
+SESSIONS=${CLAUDE_SESSIONS:-$HOME/.claude/sessions}   # Claude Code's own list of its chats
 WAIT_SECONDS=${CLAUDE_BUSY_WAIT:-60}        # after the last session is done, before sleep is allowed
 NEEDS_SECONDS=${CLAUDE_BUSY_NEEDS:-900}     # awake for a session that waits for you
 CHECK_SECONDS=${CLAUDE_BUSY_CHECK:-5}
@@ -99,7 +107,8 @@ needing() {
 
 # Start the background holder if it isn't running (and keep-awake is on).
 hold_on() {
-    holding || [ -e "$OFF" ] && return
+    holding && return
+    [ -e "$OFF" ] && [ "$1" != force ] && return
     set -- "$0" hold
     command -v gnome-session-inhibit > /dev/null && [ -n "$DBUS_SESSION_BUS_ADDRESS" ] &&
         set -- gnome-session-inhibit --inhibit suspend --app-id claude-code --reason "Claude is working" "$@"
@@ -137,6 +146,68 @@ phoning() {
     ph=
     [ -r "$DIR/.phone" ] && read -r ph < "$DIR/.phone"
     [ -n "$ph" ] && kill -0 "$ph" 2>/dev/null
+}
+
+# Some chat is still at it by Claude Code's own account: working, running a command, or waiting
+# for you; or a command it started still runs (a background job, a monitor). Chats suspended
+# with Ctrl+Z don't count.
+claude_active() {
+    for f in "$SESSIONS"/*.json; do
+        [ -r "$f" ] || continue
+        s=$(< "$f")
+        p=${s#*\"pid\":}
+        p=${p#"${p%%[![:space:]]*}"}
+        p=${p%%[!0-9]*}
+        [ -n "$p" ] && [ -r "/proc/$p/stat" ] || continue
+        st=$(< "/proc/$p/stat")
+        st=${st##*) }
+        case ${st%% *} in T|t|Z) continue ;; esac
+        status=${s#*\"status\":}
+        if [ "$status" != "$s" ]; then
+            status=${status#"${status%%[![:space:]]*}"}
+            status=${status#\"}
+            status=${status%%\"*}
+            [ "$status" = idle ] || return 0
+        fi
+        pgrep -P "$p" -x 'bash|sh|zsh|dash|fish' > /dev/null && return 0
+    done
+    return 1
+}
+
+# Every chat has really finished: nothing working, nothing waiting for you, nothing running.
+finished() {
+    ! working && ! needing && ! claude_active
+}
+
+power_off() {
+    rm -f "$OFF_WHEN_DONE" "$OFF_AT"
+    if [ -n "$CLAUDE_BUSY_POWER_OFF" ]; then   # tests
+        $CLAUDE_BUSY_POWER_OFF
+        return
+    fi
+    # Like the Power Off button; if something holds the session up, the hard way a minute later.
+    gnome-session-quit --power-off --no-prompt
+    sleep 60
+    systemctl poweroff
+}
+
+# Turn off when Claude is done, checked by the holder: finished for QUIET_SECONDS, then the top
+# bar's minute of warning (Cancel / Turn off now), then off. Anything starting again on the way
+# starts the wait over.
+off_when_done() {
+    if ! finished; then
+        quiet=
+        rm -f "$OFF_AT"
+        return
+    fi
+    [ -n "$quiet" ] || quiet=$EPOCHSECONDS
+    [ $((EPOCHSECONDS - quiet)) -ge "$QUIET_SECONDS" ] || return
+    if [ ! -e "$OFF_AT" ]; then
+        echo $((EPOCHSECONDS + OFF_WARN_SECONDS)) > "$OFF_AT"
+    else
+        read -r at < "$OFF_AT"
+        [ "$EPOCHSECONDS" -ge "${at:-0}" ] && power_off
+    fi
 }
 
 lid_closed() {
@@ -260,7 +331,19 @@ answer)
 hold)
     echo $$ > "$HOLDER"
     last=$EPOCHSECONDS
-    while [ ! -e "$OFF" ]; do
+    quiet=
+    while :; do
+        # Turning off when done: awake (lid closed too) until then, whatever else is set.
+        if [ -e "$OFF_WHEN_DONE" ]; then
+            off_when_done
+            last=$EPOCHSECONDS
+            lights
+            sleep "$CHECK_SECONDS"
+            continue
+        fi
+        quiet=
+        rm -f "$OFF_AT"
+        [ -e "$OFF" ] && break
         if working || needing recent; then
             last=$EPOCHSECONDS
         elif [ $((EPOCHSECONDS - last)) -ge "$WAIT_SECONDS" ]; then
@@ -282,6 +365,18 @@ lights)
     # After a switch in the top bar's menu.
     lights
     ;;
+off-when-done)
+    case $2 in
+    on)
+        [ -d "$DIR" ] || mkdir -p -m 700 "$DIR"
+        : > "$OFF_WHEN_DONE"
+        hold_on force
+        ;;
+    off) rm -f "$OFF_WHEN_DONE" "$OFF_AT" ;;
+    now) [ -e "$OFF_AT" ] && echo 0 > "$OFF_AT" ;;
+    *) if [ -e "$OFF_WHEN_DONE" ]; then echo on; else echo off; fi ;;
+    esac
+    ;;
 status)
     if needing; then
         echo "waiting for you:"
@@ -299,7 +394,7 @@ status)
     fi
     ;;
 *)
-    echo "usage: claude-busy busy|idle|needs|ask|lights|status" >&2
+    echo "usage: claude-busy busy|idle|needs|ask|lights|off-when-done|status" >&2
     exit 2
     ;;
 esac
