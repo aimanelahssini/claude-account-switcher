@@ -93,3 +93,6 @@
 
 /* The mascot's box keeps one width while open; its line sits in the middle */
 .claude-acct-tooltip-text { text-align: center; }
+
+/* Set to turn off when Claude is done: a grey power symbol with a clock, next to the mascot */
+.claude-acct-off-icon { icon-size: 15px; color: rgba(255,255,255,0.55); }

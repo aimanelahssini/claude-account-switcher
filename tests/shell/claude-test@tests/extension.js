@@ -168,7 +168,7 @@ async function run() {
     await sleep(1200);
     const items = ext._options._getMenuItems();
     const switches = items.filter(i => i._switch);
-    check('options: menu open', ext._options.isOpen && switches.length === 5,
+    check('options: menu open', ext._options.isOpen && switches.length === 4,
         items.map(i => i.label?.text).filter(Boolean).join(' | '));
     const named = text => switches.find(i => i.label.text === text);
     check('options: on by default, but turning off when done', switches.every(i => i.state === (i.label.text !== 'Turn off when Claude is done')));
@@ -279,11 +279,23 @@ async function offTest() {
     const exists = name => GLib.file_test(`${busy}/${name}`, GLib.FileTest.EXISTS);
     ext._tag.emit('clicked', 3);
     await sleep(700);
-    const item = ext._options._getMenuItems().find(i => i.label?.text === 'Turn off when Claude is done');
-    check('off: a switch in the menu, off', !!item && !item.state);
-    item.toggle();
+    const button = text => ext._options._getMenuItems().find(i => i.label?.text === text);
+    const item = button('Turn off when Claude is done');
+    check('off: a button in the menu (not a switch)', !!item && !item._switch);
+    check('off: no icon in the top bar yet', !ext._offIcon.visible);
+    item.emit('activate', null);
     await sleep(800);
-    check('off: turning it on tells claude-busy', exists('.off-when-done'));
+    check('off: pressing it tells claude-busy', exists('.off-when-done'));
+    check('off: a grey power-and-clock icon next to the mascot', ext._offIcon.visible && ext._offIcon.get_parent() === ext._mascot.get_parent());
+    ext._tag.hover = true;
+    await sleep(300);
+    check('off: the hover text says so', ext._tooltip.text.endsWith('· turns off when done'), ext._tooltip.text);
+    ext._tag.hover = false;
+    await shot('off-icon', ext);
+    ext._tag.emit('clicked', 3);
+    await sleep(700);
+    check('off: the button now takes it back', !!button('Don\'t turn off when done'));
+    await shot('off-menu-set', ext, false, ext._options.actor);
     ext._options.close();
     await sleep(400);
     // Every chat finished: claude-busy's minute of warning.
@@ -300,6 +312,7 @@ async function offTest() {
     n.actions.find(a => a.label === 'Cancel').activate();
     await sleep(1000);
     check('off: Cancel turns it off', !exists('.off-when-done') && !exists('.off-at') && !ext._offNotice);
+    check('off: and the icon goes', !ext._offIcon.visible);
     // A chat starting again: claude-busy drops the warning, the notification goes with it.
     GLib.file_set_contents(`${busy}/.off-at`, '1\n');
     await sleep(600);
@@ -309,7 +322,7 @@ async function offTest() {
     check('off: warning withdrawn when it no longer applies', !!n2 && !ext._offNotice);
     ext._tag.emit('clicked', 3);
     await sleep(700);
-    check('off: the switch shows it off again', !ext._options._getMenuItems().find(i => i.label?.text === 'Turn off when Claude is done').state);
+    check('off: the button is back to turning it on', !!button('Turn off when Claude is done'));
     await shot('off-menu', ext, false, ext._options.actor);
     ext._options.close();
     out('DONE');

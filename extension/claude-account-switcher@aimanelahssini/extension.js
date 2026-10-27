@@ -309,6 +309,10 @@ export default class ClaudeAccountExtension extends Extension {
         this._needsBox.add_child(this._needsDot);
         this._needsBox.add_child(this._needsName);
         tagBox.add_child(this._needsBox);
+        // Set to turn off when Claude is done: a grey power symbol with a clock.
+        this._offIcon = new St.Icon({style_class: 'claude-acct-off-icon', visible: false, y_align: Clutter.ActorAlign.CENTER,
+            gicon: Gio.FileIcon.new(this.dir.get_child('icons').get_child('power-clock-symbolic.svg'))});
+        tagBox.add_child(this._offIcon);
         this._tag.connect('notify::hover', () => this._showTooltip(this._tag));
         this._box.add_child(this._tag);
         this._indicator.add_child(this._box);
@@ -638,6 +642,7 @@ export default class ClaudeAccountExtension extends Extension {
     // claude-busy writes .off-at when every chat has really finished: a minute's warning, with
     // Cancel and Turn off now, gone again if it's cancelled or a chat starts again.
     _syncOffAt() {
+        this._offIcon.visible = GLib.file_test(GLib.build_filenamev([BUSY_DIR, '.off-when-done']), GLib.FileTest.EXISTS);
         const pending = GLib.file_test(GLib.build_filenamev([BUSY_DIR, '.off-at']), GLib.FileTest.EXISTS);
         if (!pending) {
             this._offNotice?.destroy();
@@ -976,12 +981,15 @@ export default class ClaudeAccountExtension extends Extension {
             awake.connect('toggled', (item, on) => this._setOption('keep-awake', on));
             menu.addMenuItem(awake);
             menu.addMenuItem(this._hint('No sleep until it\'s done, even with the lid closed'));
-            // Until you turn it off or the computer restarts (claude-busy's holder does the waiting,
-            // so it works with the screen locked and the lid closed).
-            const off = new PopupMenu.PopupSwitchMenuItem('Turn off when Claude is done', offWhenDone);
-            off.connect('toggled', (item, on) => this._runBusy('off-when-done', on ? 'on' : 'off'));
-            menu.addMenuItem(off);
-            menu.addMenuItem(this._hint('Once every chat has really finished, after a minute\'s warning'));
+            // A one-time thing, until it turns the computer off (or you take it back, or it
+            // restarts). claude-busy's holder does the waiting, so it works locked and lid closed.
+            if (offWhenDone) {
+                menu.addAction('Don\'t turn off when done', () => this._runBusy('off-when-done', 'off'));
+                menu.addMenuItem(this._hint('Set: turns off once every chat has really finished'));
+            } else {
+                menu.addAction('Turn off when Claude is done', () => this._runBusy('off-when-done', 'on'));
+                menu.addMenuItem(this._hint('Once every chat has really finished, after a minute\'s warning'));
+            }
             const auto = new PopupMenu.PopupSwitchMenuItem('Switch accounts at 100%', this._option('auto-switch'));
             auto.connect('toggled', (item, on) => {
                 this._setOption('auto-switch', on);
@@ -1294,6 +1302,11 @@ export default class ClaudeAccountExtension extends Extension {
     }
 
     _tagText() {
+        const text = this._tagStatus();
+        return this._offIcon?.visible ? `${text} · turns off when done` : text;
+    }
+
+    _tagStatus() {
         if (this._needs.length > 1)
             return `Claude needs you in ${this._needs.map(e => `“${this._chatName(e)}”`).join(', ')}. Click to open the first`;
         if (this._needs.length)
