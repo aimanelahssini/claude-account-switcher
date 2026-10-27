@@ -44,9 +44,19 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 
 Click the mascot (or right-click it) to turn any of these off or back on. All are on by default.
 
-<p align="center"><img src="docs/options.png" width="409" alt="Menu under the mascot: Claude is working, with switches for Stay awake while Claude works, Switch accounts at 100%, Permission prompts as notifications and Blink the ThinkPad lights"></p>
+<p align="center"><img src="docs/options.png" width="420" alt="Menu under the mascot: Claude is working, with switches for Stay awake while Claude works, Switch accounts at 100%, Permission prompts as notifications and Blink the ThinkPad lights"></p>
 
 - **Stay awake while Claude works:** see [While Claude works](#while-claude-works).
+- **Turn off when Claude is done:** the computer turns off once every chat has really
+  finished, and stays on until then, lid closed too. "Finished" means, for every chat: not
+  working (Claude Code's own status says idle), no command it started still running (a
+  background job, a monitor), and not waiting for you (a permission prompt or a question);
+  and all of that for 3 minutes in a row, so a pause between two steps doesn't count. Then a
+  notification gives you a minute, with **Cancel** and **Turn off now**; a chat starting
+  again meanwhile cancels it and the wait starts over. It turns off like the Power Off button
+  (and the hard way a minute later if something holds the session up). It stays set until
+  you turn it off or the computer restarts. Chats suspended with Ctrl+Z don't count; a chat
+  that scheduled itself to wake up later (`/loop`) does count as finished.
 - **Switch accounts at 100%:** checked with every usage update (once a minute). It only moves
   to an account that is signed in and under its limit; if they're all full, it stays. The
   chat you're in continues on the new account with your next message.
