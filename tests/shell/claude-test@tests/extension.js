@@ -473,6 +473,13 @@ async function tabsTest() {
         write(`${home}/.claude/sessions/${pid}.json`, JSON.stringify({pid, sessionId: `s-${k}`, cwd: '/home/u/p'}));
         write(`${home}/.claude/projects/-home-u-p/s-${k}.jsonl`, `${JSON.stringify({type: 'summary', aiTitle: title})}\n`);
     }
+    // Alpha was also suspended with Ctrl+Z and resumed (a stopped claude for the same chat), and
+    // another chat sits suspended on its own: neither is a chat you have open.
+    for (const id of ['s-a', 's-z']) {
+        const pid = standIn();
+        GLib.spawn_command_line_sync(`kill -STOP ${pid}`);
+        write(`${home}/.claude/sessions/${pid}.json`, JSON.stringify({pid, sessionId: id, cwd: '/home/u/p'}));
+    }
     // Bravo works, Charlie waits for you, Alpha and Delta are idle.
     write(`${busy}/s-b`, '\n');
     write(`${busy}/needs/s-c`, `\n${Math.floor(Date.now() / 1000)}\npermission\n/home/u/p\n${home}/.claude/projects/-home-u-p/s-c.jsonl\n`);

@@ -1419,6 +1419,12 @@ export default class ClaudeAccountExtension extends Extension {
             }
             if (!info?.sessionId || !GLib.file_test(`/proc/${info.pid}`, GLib.FileTest.EXISTS))
                 continue;
+            // A claude suspended with Ctrl+Z isn't a chat you have open; and a chat resumed in
+            // several processes (one running, others suspended) is still one chat.
+            const stat = readText(`/proc/${info.pid}/stat`) ?? '';
+            if (/^[Tt]$/.test(stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3)) ||
+                chats.some(c => c.id === info.sessionId))
+                continue;
             const transcript = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'projects',
                 (info.cwd ?? '').replace(/[^A-Za-z0-9]/g, '-'), `${info.sessionId}.jsonl`]);
             chats.push({id: info.sessionId, pid: info.pid, cwd: info.cwd, transcript,
