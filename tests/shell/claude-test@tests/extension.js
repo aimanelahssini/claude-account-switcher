@@ -89,7 +89,7 @@ async function run() {
     for (let i = 0; i < 24; i++) {
         while (GLib.get_monotonic_time() - t0 < i * 120000 + 60000)
             await sleep(5);
-        glyphs.add(ext._glyph.text);
+        glyphs.add(ext._glyph.get_children().find(l => l.opacity === 255)?.text);
         widths.add(`${ext._verb.get_transformed_position()[0]}/${ext._tag.width}`);
         glimmers.add(ext._verb.clutter_text.get_layout().get_attributes()?.to_string());
         await shot(`spin-${String(i).padStart(2, '0')}`, ext);
@@ -806,6 +806,62 @@ async function needsTest() {
     out('DONE');
 }
 
+// TEST_ONLY=cost: what the spinner costs the shell while Claude works. Counts frames, top-bar
+// relayouts and the shell's own CPU time over a few seconds, idle and then spinning.
+async function costTest() {
+    let ext;
+    for (let i = 0; i < 40 && !ext?._tag; i++) {
+        await sleep(500);
+        ext = Main.extensionManager.lookup(UUID)?.stateObj;
+    }
+    Main.overview.hide();
+    await sleep(1500);
+    const cpu = () => {
+        const f = new TextDecoder().decode(GLib.file_get_contents('/proc/self/stat')[1]).split(') ')[1].split(' ');
+        return Number(f[11]) + Number(f[12]);
+    };
+    const measure = async (label, secs) => {
+        let frames = 0, layouts = 0;
+        const ids = [[global.stage, global.stage.connect('after-paint', () => frames++)]];
+        for (const a of [ext._indicator, ext._spinner, ext._glyph, ext._verb])
+            ids.push([a, a.connect('notify::allocation', () => layouts++)]);
+        const c0 = cpu();
+        await sleep(secs * 1000);
+        const used = (cpu() - c0) / secs;
+        ids.forEach(([a, id]) => a.disconnect(id));
+        out(`COST ${label}: ${used.toFixed(1)}% CPU, ${(frames / secs).toFixed(1)} frames/s, ${(layouts / secs).toFixed(1)} relayouts/s`);
+        return {used, frames: frames / secs, layouts: layouts / secs};
+    };
+    const idle = await measure('idle', 6);
+    GLib.file_set_contents(`${BUSY}/0a1b2c3d-test`, '1\n');
+    await sleep(800);
+    check('cost: spinning', !!ext._spinTimer && ext._spinner.visible);
+    for (let i = 0; i < 3; i++) {
+        await shot(`spin-${i}`, ext);
+        await sleep(370);
+    }
+    const spin = await measure('spinning', 10);
+    check('cost: no top-bar relayouts while it spins', spin.layouts < 0.5, `${spin.layouts.toFixed(1)}/s`);
+    check('cost: at most ~9 frames a second while it spins', spin.frames <= 9.5, `${spin.frames.toFixed(1)}/s`);
+    out(`COST extra while spinning: ${(spin.used - idle.used).toFixed(1)}% CPU`);
+    // A fullscreen window on the top bar's monitor hides the bar: nothing to animate.
+    const win = GLib.spawn_async(null, ['python3', GLib.getenv('TEST_WINDOW'), 'fullscreen'], null,
+        GLib.SpawnFlags.SEARCH_PATH, null)[1];
+    standIns.push(win);
+    for (let i = 0; i < 30 && !Main.layoutManager.primaryMonitor.inFullscreen; i++)
+        await sleep(300);
+    if (!Main.layoutManager.primaryMonitor.inFullscreen) {
+        const w = global.display.focus_window;
+        w?.make_fullscreen();
+        await sleep(1000);
+    }
+    await sleep(500);
+    check('cost: a fullscreen window is up', Main.layoutManager.primaryMonitor.inFullscreen);
+    const full = await measure('spinning under a fullscreen window', 5);
+    check('cost: paused under a fullscreen window', !ext._spinTimer && full.layouts < 0.5);
+    out('DONE');
+}
+
 // TEST_ONLY=tokens-panel: just the history panel in tokens.
 async function tokensPanel() {
     let ext;
@@ -833,7 +889,7 @@ async function tokensPanel() {
 export default class TestDriver extends Extension {
     enable() {
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest, flashdemo: flashDemo, switch: switchTest, off: offTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
+            ({'tokens-panel': tokensPanel, needs: needsTest, tabs: tabsTest, edge: edgeTest, flashdemo: flashDemo, switch: switchTest, off: offTest, cost: costTest}[GLib.getenv('TEST_ONLY')] ?? run)().catch(e => out(`ERROR ${e}\n${e.stack}`)).finally(() => {
                 GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
                     for (const pid of standIns)
                         GLib.spawn_command_line_sync(`kill ${pid}`);

@@ -328,12 +328,24 @@ export default class ClaudeAccountExtension extends Extension {
         tagBox.add_child(this._mascot);
         this._spinner = new St.BoxLayout({style_class: 'claude-acct-spinner', visible: false,
             y_align: Clutter.ActorAlign.CENTER});
-        // The glyphs come from different fonts; a fixed-width box keeps the word still.
-        this._glyph = new St.Label({style_class: 'claude-acct-spinner-glyph', y_align: Clutter.ActorAlign.CENTER});
+        // The glyphs come from different fonts, so each has its own label, stacked in a fixed-size
+        // box and shown by opacity: swapping a label's text would resize it, and every resize
+        // lays out the whole top bar again, 8 times a second.
+        this._glyph = new St.Widget({style_class: 'claude-acct-spinner-glyph', layout_manager: new Clutter.BinLayout(),
+            y_align: Clutter.ActorAlign.CENTER});
+        for (const g of SPINNER)
+            this._glyph.add_child(new St.Label({text: g, opacity: 0, x_align: Clutter.ActorAlign.CENTER}));
         this._verb = new St.Label({y_align: Clutter.ActorAlign.CENTER});
         this._spinner.add_child(this._glyph);
         this._spinner.add_child(this._verb);
         tagBox.add_child(this._spinner);
+        // The shell may tear the top bar down (shutting down) before disable() runs.
+        this._spinner.connect('destroy', () => {
+            if (this._spinTimer)
+                GLib.source_remove(this._spinTimer);
+            this._spinTimer = null;
+            this._spinner = null;
+        });
         this._needsBox = new St.BoxLayout({style_class: 'claude-acct-needs', visible: false,
             y_align: Clutter.ActorAlign.CENTER});
         this._needsDot = new St.Label({text: '●', style_class: 'claude-acct-needs-dot', y_align: Clutter.ActorAlign.CENTER});
@@ -378,6 +390,12 @@ export default class ClaudeAccountExtension extends Extension {
         // What Claude Code is doing, from claude-busy's files: working sessions, sessions waiting
         // for you, and permission prompts to offer as notifications.
         this._busy = null;
+        this._spinWanted = false;
+        // The spinner rests while nobody can see the top bar: a fullscreen window over it, or
+        // the screen blanked. (Locked, GNOME turns the whole extension off.)
+        const respin = () => this._spin(this._spinWanted);
+        global.display.connectObject('in-fullscreen-changed', respin, this);
+        Main.screenShield?.connectObject('active-changed', respin, this);
         this._needs = [];
         this._needsKey = '';
         this._titles = new Map();   // transcript -> chat title
@@ -421,6 +439,8 @@ export default class ClaudeAccountExtension extends Extension {
         Main.messageTray.disconnectObject(this);
         this._dirMonitors?.forEach(m => m.cancel());
         this._dirMonitors = [];
+        global.display.disconnectObject(this);
+        Main.screenShield?.disconnectObject(this);
         this._spin(false);
         this._blink(false);
         for (const n of this._asks?.values() ?? [])
@@ -500,7 +520,7 @@ export default class ClaudeAccountExtension extends Extension {
             this._blink(false);
         }
         const spin = busy && !needs.length;
-        if (busy !== this._busy || spin !== !!this._spinTimer) {
+        if (busy !== this._busy || spin !== this._spinWanted) {
             this._busy = busy;
             if (busy)
                 this._tag.add_style_class_name('busy');
@@ -793,44 +813,54 @@ export default class ClaudeAccountExtension extends Extension {
     }
 
     // Like Claude Code: a verb for this stretch of work, then glyph and glimmer every frame.
+    // Called again when the top bar gets covered or uncovered: it rests while nobody can see it
+    // and picks up where it was, same word.
     _spin(on) {
         if (this._spinTimer)
             GLib.source_remove(this._spinTimer);
         this._spinTimer = null;
         if (!this._spinner)
             return;
+        if (!on)
+            this._spinState = null;
+        this._spinWanted = on;
         // The spinner takes the mascot's place while Claude works.
         this._spinner.visible = on;
         this._mascot.visible = !on;
-        if (!on)
+        if (!on || Main.layoutManager.primaryMonitor?.inFullscreen || Main.screenShield?.active)
             return;
         const verbs = this._verbs();
-        let word = null, chars, since, sweep = 0, frame = 0, lastAlign = 0;
+        const s = this._spinState ??= {chars: null, since: 0, sweep: 0, frame: 0, markup: null};
+        let lastAlign = 0;
         const pick = () => {
-            word = `${this._nextVerb(verbs)}…`;
-            chars = [...word];
-            since = GLib.get_monotonic_time();
-            sweep = 0;
+            s.chars = [...`${this._nextVerb(verbs)}…`];
+            s.since = GLib.get_monotonic_time();
+            s.sweep = 0;
         };
-        pick();
+        if (!s.chars)
+            pick();
+        const glyphs = this._glyph.get_children();
         const draw = () => {
-            if (sweep >= chars.length + GLIMMER_PAUSE) {
-                sweep = 0;
-                if (GLib.get_monotonic_time() - since >= (this._wordSeconds ?? WORD_SECONDS) * 1e6)  // tests shorten it
+            if (s.sweep >= s.chars.length + GLIMMER_PAUSE) {
+                s.sweep = 0;
+                if (GLib.get_monotonic_time() - s.since >= (this._wordSeconds ?? WORD_SECONDS) * 1e6)  // tests shorten it
                     pick();
             }
-            const glimmer = sweep++ - 1;
-            const text = chars.map((ch, i) => Math.abs(i - glimmer) <= 1
+            const glimmer = s.sweep++ - 1;
+            const markup = s.chars.map((ch, i) => Math.abs(i - glimmer) <= 1
                 ? `<span foreground="${SHIMMER}">${GLib.markup_escape_text(ch, -1)}</span>`
                 : GLib.markup_escape_text(ch, -1)).join('');
             // The lid dot blinks with the star (claude-busy); keep the two in step.
-            if (frame % SPINNER_FRAMES.length === 0 && GLib.get_monotonic_time() - lastAlign >= REALIGN_MS * 1000) {
+            if (s.frame % SPINNER_FRAMES.length === 0 && GLib.get_monotonic_time() - lastAlign >= REALIGN_MS * 1000) {
                 lastAlign = GLib.get_monotonic_time();
                 this._alignLights('working');
             }
-            this._glyph.text = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
-            this._verb.clutter_text.set_markup(text);
-            frame++;
+            const glyph = SPINNER_FRAMES[s.frame % SPINNER_FRAMES.length];
+            glyphs.forEach(l => (l.opacity = l.text === glyph ? 255 : 0));
+            // Between two sweeps the word doesn't change: leave it be.
+            if (markup !== s.markup)
+                this._verb.clutter_text.set_markup(s.markup = markup);
+            s.frame++;
         };
         draw();
         this._spinTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SPINNER_MS, () => {
