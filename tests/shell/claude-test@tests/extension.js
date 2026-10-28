@@ -292,19 +292,42 @@ async function offTest() {
     const item = ext._offItem;
     check('off: a round button in the menu, not lit', !!item && !item.checked && !item.button.has_style_pseudo_class('checked'));
     check('off: no icon in the top bar yet', !ext._offIcon.visible);
+    // Clicking it changes nothing in the menu's layout or the top bar's position of things:
+    // the menu, its rows, the mascot and the accounts stay where they were.
+    const where = () => JSON.stringify({
+        menu: [...ext._options.actor.get_transformed_position(), ext._options.actor.width, ext._options.actor.height],
+        rows: ext._options._getMenuItems().map(i => [Math.round(i.get_transformed_position()[1]), i.height]),
+        mascot: ext._tag.get_transformed_position()[0], tag: ext._tag.width,
+        accounts: ext._buttons.map(b => b.get_transformed_position()[0]),
+    });
+    const before = where();
+    out(`# before: ${before}`);
     await click(item.button);
+    out(`# after:  ${where()}`);
+    check('off: clicking it moves nothing', where() === before);
     check('off: clicking it lights it up, the menu stays open', item.checked && item.button.has_style_pseudo_class('checked') &&
         ext._options.isOpen);
     check('off: and tells claude-busy', exists('.off-when-done'));
-    check('off: a grey power-and-clock icon next to the mascot', ext._offIcon.visible && ext._offIcon.get_parent() === ext._mascot.get_parent());
+    check('off: the top bar waits for the menu to close (nothing moves under it)', !ext._offIcon.visible);
     await shot('off-menu-set', ext, false, ext._options.actor);
     await click(item.label);
-    check('off: clicking the row takes it back', !item.checked && !exists('.off-when-done') && ext._options.isOpen && !ext._offIcon.visible);
+    check('off: clicking the row takes it back', !item.checked && !exists('.off-when-done') && ext._options.isOpen);
     await shot('off-menu-unset', ext, false, ext._options.actor);
     await click(item.button);
     check('off: set again', item.checked && exists('.off-when-done'));
     ext._options.close();
     pointer.notify_absolute_motion(GLib.get_monotonic_time(), 700, 600);
+    await sleep(400);
+    check('off: menu closed: a grey power-and-clock icon next to the mascot', ext._offIcon.visible &&
+        ext._offIcon.get_parent() === ext._mascot.get_parent());
+    // Reopened while set: still nothing moves when it's taken back.
+    ext._tag.emit('clicked', 3);
+    await sleep(700);
+    const before2 = where();
+    await click(ext._offItem.label);
+    check('off: taking it back moves nothing either', where() === before2 && !ext._offItem.checked);
+    await click(ext._offItem.button);
+    ext._options.close();
     await sleep(400);
     ext._tag.hover = true;
     await sleep(300);

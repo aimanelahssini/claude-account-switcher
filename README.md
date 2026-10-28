@@ -49,7 +49,8 @@ by default.
 
 - **Stay awake while Claude works:** see [While Claude works](#while-claude-works).
 - **Turn off when Claude is done** (for this once): click the round button on its row and it
-  lights up orange (click again to take it back; the menu stays open so you see it). The
+  lights up orange (click again to take it back; the menu stays open so you see it, and nothing
+  in it moves). The grey icon in the top bar shows up once the menu closes. The
   computer turns off once every chat has really finished, and stays on until then, lid closed
   too. While it's set, a grey power symbol with a clock sits next to the mascot. "Finished" means, for every chat: not
   working (Claude Code's own status says idle), no command it started still running (a

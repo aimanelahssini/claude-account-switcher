@@ -691,10 +691,20 @@ export default class ClaudeAccountExtension extends Extension {
     }
 
     // ---- turn off when Claude is done -------------------------------------------------
+    // The grey icon next to the mascot. Not while the mascot's menu is open: the mascot would
+    // move and the menu with it; the lit button says it meanwhile.
+    _syncOffIcon() {
+        if (this._options?.isOpen)
+            return;
+        this._offIcon.visible = GLib.file_test(GLib.build_filenamev([BUSY_DIR, '.off-when-done']), GLib.FileTest.EXISTS);
+        if (this._tag?.hover)
+            this._showTooltip(this._tag);
+    }
+
     // claude-busy writes .off-at when every chat has really finished: a minute's warning, with
     // Cancel and Turn off now, gone again if it's cancelled or a chat starts again.
     _syncOffAt() {
-        this._offIcon.visible = GLib.file_test(GLib.build_filenamev([BUSY_DIR, '.off-when-done']), GLib.FileTest.EXISTS);
+        this._syncOffIcon();
         const pending = GLib.file_test(GLib.build_filenamev([BUSY_DIR, '.off-at']), GLib.FileTest.EXISTS);
         if (!pending) {
             this._offNotice?.destroy();
@@ -1029,6 +1039,10 @@ export default class ClaudeAccountExtension extends Extension {
             Main.uiGroup.add_child(this._options.actor);
             this._options.actor.hide();
             this._optionsManager.addMenu(this._options);
+            this._options.connect('open-state-changed', (menu, open) => {
+                if (!open)
+                    this._syncOffIcon();
+            });
         }
         const menu = this._options;
         if (!menu.isOpen) {
@@ -1048,13 +1062,10 @@ export default class ClaudeAccountExtension extends Extension {
             // A round button that lights up when it's set; the menu stays open so you see it.
             const off = new OffItem(Gio.FileIcon.new(this.dir.get_child('icons').get_child('power-clock-symbolic.svg')),
                 offWhenDone);
-            const offHint = this._hint('');
-            const showOff = set => {
-                off.setChecked(set);
-                offHint.label.text = set ? 'Set: turns off once every chat has really finished'
-                    : 'Once every chat has really finished, after a minute\'s warning';
-            };
-            showOff(offWhenDone);
+            // The same line either way (the lit button says whether it's set), so the menu keeps
+            // its size when you click.
+            const offHint = this._hint('Once every chat has really finished, after a minute\'s warning');
+            const showOff = set => off.setChecked(set);
             off.connect('toggled', (item, set) => {
                 showOff(set);
                 this._runBusy('off-when-done', set ? 'on' : 'off');
