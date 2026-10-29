@@ -764,53 +764,103 @@ async function needsTest() {
     await sleep(800);
     check('needs: click opens that chat', focused() === '✳ Fix the poster upload', focused());
 
-    // Its permission prompt as a notification, while you're elsewhere.
+    // Its permission prompt, as a card like the terminal's, while you're elsewhere. Each prompt
+    // has its own name (chat.n); claude-busy waits on its pipe.
     Main.activateWindow(windowTitled('Something else'));
     await sleep(500);
-    GLib.spawn_command_line_sync(`mkfifo ${busy}/ask/s1.fifo`);
-    write(`${busy}/ask/s1.pid`, '1\n');
-    spawn('sh', '-c', `cat ${busy}/ask/s1.fifo > ${busy}/answer.txt`);
+    const prompt = key => {
+        GLib.spawn_command_line_sync(`mkfifo ${busy}/ask/${key}.fifo`);
+        write(`${busy}/ask/${key}.pid`, '1\n');
+        spawn('sh', '-c', `cat ${busy}/ask/${key}.fifo > ${busy}/answer-${key}.txt`);
+    };
     const request = {session_id: 's1', cwd: '/home/u/Projects/listr', transcript_path: `${home}/chat.jsonl`,
         hook_event_name: 'PermissionRequest', tool_name: 'Bash',
         tool_input: {command: 'rm -f pezei.py', description: 'Delete pezei.py'},
         permission_suggestions: [{type: 'addRules', rules: [{toolName: 'Bash', ruleContent: 'rm -f pezei.py'}],
             behavior: 'allow', destination: 'localSettings'}, {type: 'setMode', mode: 'acceptEdits', destination: 'session'}]};
-    write(`${busy}/ask/s1.json`, JSON.stringify(request));
+    prompt('s1.101');
+    write(`${busy}/ask/s1.101.json`, JSON.stringify(request));
     await sleep(800);
-    const n = ext._asks.get('s1');
-    check('notify: shown', !!n);
-    check('notify: project as title', n?.title === 'listr', n?.title);
-    check('notify: the request in plain words', n?.body === 'Delete pezei.py? — $ rm -f pezei.py', JSON.stringify(n?.body));
-    check('notify: opens expanded, buttons showing', Main.messageTray._banner?.expanded === true);
-    check('notify: Yes, Always, No', n?.actions.map(a => a.label).join() === 'Yes,Always,No', n?.actions.map(a => a.label).join());
-    const shotStream = Gio.File.new_for_path(`${OUT}/notification.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
-    await new Shell.Screenshot().screenshot_area(global.stage.width / 2 - 260, 0, 520, 200, shotStream);
+    const all = a => [a, ...a.get_children().flatMap(all)];
+    const card = ext._askCard;
+    const texts = card ? all(card).filter(a => a instanceof St.Label).map(a => a.text) : [];
+    check('card: shown', !!card && card.visible && card.opacity > 0);
+    check('card: project and chat', texts.includes('listr') && texts.includes('Fix the poster upload'), texts.join(' | '));
+    check('card: the terminal\'s prompt', ['Bash command', 'rm -f pezei.py', 'Delete pezei.py', 'Do you want to proceed?']
+        .every(t => texts.includes(t)), texts.join(' | '));
+    const options = card?._options.map(o => o.child.text);
+    check('card: the terminal\'s options, in full', JSON.stringify(options) === JSON.stringify(['1. Yes',
+        '2. Yes, and don\'t ask again for rm -f pezei.py commands in /home/u/Projects/listr', '3. No']), JSON.stringify(options));
+    const shotStream = Gio.File.new_for_path(`${OUT}/card.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
+    await new Shell.Screenshot().screenshot_area(card.x - 16, card.y - 12, card.width + 32, card.height + 28, shotStream);
     shotStream.close(null);
-    n.actions.find(a => a.label === 'Always').activate();
-    await sleep(1200);
-    const answer = read(`${busy}/answer.txt`);
-    check('notify: Always answers Claude Code, with the suggested rule',
-        /"behavior":"allow"/.test(answer) && /"ruleContent":"rm -f pezei.py"/.test(answer) && !/setMode/.test(answer), answer.trim());
-    // claude-busy then removes the prompt's files.
-    for (const f of ['s1.json', 's1.fifo', 's1.pid'])
-        GLib.unlink(`${busy}/ask/${f}`);
+    // A second prompt from the same chat at once: its own card, after the first.
+    prompt('s1.102');
+    write(`${busy}/ask/s1.102.json`, JSON.stringify({...request, tool_input: {command: 'ls -la', description: 'List files'}}));
+    await sleep(700);
+    check('card: a second prompt waits its turn', ext._askCard?._key === 's1.101' && ext._asks.has('s1.102'));
+    const pointer = Clutter.get_default_backend().get_default_seat().create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+    const click = async actor => {
+        const [x, y] = actor.get_transformed_position();
+        pointer.notify_absolute_motion(GLib.get_monotonic_time(), x + actor.width / 2, y + actor.height / 2);
+        await sleep(200);
+        pointer.notify_button(GLib.get_monotonic_time(), Clutter.BUTTON_PRIMARY, Clutter.ButtonState.PRESSED);
+        await sleep(50);
+        pointer.notify_button(GLib.get_monotonic_time(), Clutter.BUTTON_PRIMARY, Clutter.ButtonState.RELEASED);
+        await sleep(900);
+    };
+    await click(ext._askCard._options[1]);
+    const answer = read(`${busy}/answer-s1.101.txt`);
+    check('card: a click answers THAT prompt, with the suggested rule',
+        /"behavior":"allow"/.test(answer) && /"ruleContent":"rm -f pezei.py"/.test(answer) && !/setMode/.test(answer) &&
+        read(`${busy}/answer-s1.102.txt`) === '', answer.trim());
+    // claude-busy then removes the prompt's files: the next prompt's card shows.
+    for (const f of ['json', 'fifo', 'pid'])
+        GLib.unlink(`${busy}/ask/s1.101.${f}`);
+    await sleep(700);
+    check('card: then the next prompt', ext._askCard?._key === 's1.102' && ext._askCard._options[0].child.text === '1. Yes');
+    await click(ext._askCard._options[0]);
+    check('card: Yes on the second answers the second', /"behavior":"allow"/.test(read(`${busy}/answer-s1.102.txt`)) &&
+        !/updatedPermissions/.test(read(`${busy}/answer-s1.102.txt`)));
+    for (const f of ['json', 'fifo', 'pid'])
+        GLib.unlink(`${busy}/ask/s1.102.${f}`);
     await sleep(600);
-    check('notify: gone once answered', !ext._asks.has('s1'));
+    check('card: gone when nothing waits', !ext._askCard);
 
-    // Answered in the terminal instead: the notification goes away by itself.
-    write(`${busy}/ask/s2.json`, JSON.stringify({...request, session_id: 's2', tool_input: {command: 'ls'}}));
+    // Answered in the terminal instead: the card goes away by itself.
+    write(`${busy}/ask/s2.201.json`, JSON.stringify({...request, session_id: 's2', tool_input: {command: 'ls'}}));
     await sleep(600);
-    const n2 = ext._asks.get('s2');
-    GLib.unlink(`${busy}/ask/s2.json`);
+    const shown = ext._askCard?._key === 's2.201';
+    GLib.unlink(`${busy}/ask/s2.201.json`);
     await sleep(600);
-    check('notify: withdrawn when answered elsewhere', !!n2 && !ext._asks.has('s2'));
-    // No notification for the chat you're looking at: its prompt is right there.
+    check('card: withdrawn when answered elsewhere', shown && !ext._askCard);
+    // An answer that can't be delivered (the prompt is gone): you're told, no silent failure.
+    write(`${busy}/ask/s2.202.json`, JSON.stringify({...request, session_id: 's2', tool_input: {command: 'pwd'}}));
+    await sleep(600);
+    const before = Main.messageTray.getSources().flatMap(src => src.notifications).length;
+    await click(ext._askCard._options[0]);
+    const told = Main.messageTray.getSources().flatMap(src => src.notifications).find(n => /already answered or closed/.test(n.body ?? ''));
+    check('card: an answer that couldn\'t be delivered says so', !!told && !ext._askCard, `${before}`);
+    GLib.unlink(`${busy}/ask/s2.202.json`);
+    // × sets it aside; the prompt stays (the dot in the top bar still says it).
+    write(`${busy}/ask/s2.203.json`, JSON.stringify({...request, session_id: 's2', tool_input: {command: 'id'}}));
+    await sleep(600);
+    const close = all(ext._askCard).find(a => a.has_style_class_name?.('claude-acct-ask-close'));
+    await click(close);
+    check('card: × sets it aside', !ext._askCard && ext._asks.has('s2.203'));
+    GLib.unlink(`${busy}/ask/s2.203.json`);
+    // No card for the chat you're looking at: its prompt is right there. Looking away shows it.
     Main.activateWindow(windowTitled('✳ Fix the poster upload'));
     await sleep(500);
-    write(`${busy}/ask/s1.json`, JSON.stringify(request));
+    write(`${busy}/ask/s1.103.json`, JSON.stringify(request));
     await sleep(600);
-    check('notify: not for the chat in front of you', !ext._asks.has('s1'),
+    check('card: not for the chat in front of you', !ext._askCard,
         `focused "${focused()}", chat window "${ext._chatWindow({id: 's1', transcript: `${home}/chat.jsonl`, cwd: '/home/u/Projects/listr'})?.get_title()}"`);
+    Main.activateWindow(windowTitled('Something else'));
+    await sleep(600);
+    check('card: looking away shows it', ext._askCard?._key === 's1.103');
+    GLib.unlink(`${busy}/ask/s1.103.json`);
+    await sleep(400);
 
     // Answered: back to the spinner (the other chat still works).
     GLib.unlink(`${busy}/needs/s1`);

@@ -68,23 +68,60 @@ hook busy '"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion"'
 check "a question: needs you (question)" "[ \"\$(sed -n 3p '$D/needs/s1')\" = question ] && [ ! -e '$D/s1' ]"
 hook busy '"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion"'
 
+# Each waiting prompt has its own name (chat.n); `new_prompt` gives the one just opened.
+prompts() { ls "$D/ask" 2>/dev/null | sed -n 's/\.json$//p' | sort; }
+seen=""
+new_prompt() {  # sets NEW (not in a subshell, so it remembers what it handed out)
+    local k
+    NEW=
+    for k in $(prompts); do case " $seen " in *" $k "*) ;; *) seen="$seen $k"; NEW=$k; return ;; esac; done
+}
+allow='{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
+hookto() {  # hookto OUT COMMAND JSON-FIELDS [&]: like hook, output to $T/OUT
+    echo "\"$BUSY\" $2 <<< '{\"session_id\":\"s1\",\"cwd\":\"/home/u/Projects/listr\",\"transcript_path\":\"/t/s1.jsonl\",$3}' > \"$T/$1\" $4" > "$T/cmds"
+    sleep 0.4
+}
+ask() { hookto "$1" ask '"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"'"$2"'"}' '&'; }
+
 # A permission prompt answered from the top bar.
 hook ask '"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -f pezei.py","description":"Delete pezei.py"}' '&'
-check "ask: the prompt is offered to the top bar" "[ -p '$D/ask/s1.fifo' ] && grep -q pezei '$D/ask/s1.json'"
+new_prompt; k1=$NEW
+check "ask: the prompt is offered to the top bar, under its own name" "[ -n '$k1' ] && [ -p '$D/ask/$k1.fifo' ] && grep -q pezei '$D/ask/$k1.json'" "$k1"
 check "  and waits" "[ ! -s '$T/out' ]"
-echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}' | "$BUSY" answer s1
+echo "$allow" | "$BUSY" answer "$k1"
 sleep 0.5
 check "answered from the top bar: Claude Code gets the decision" "grep -q '\"behavior\":\"allow\"' '$T/out'"
-check "  prompt files gone, working again" "[ ! -e '$D/ask/s1.fifo' ] && [ ! -e '$D/needs/s1' ] && [ -e '$D/s1' ]"
+check "  prompt files gone, working again" "[ ! -e '$D/ask/$k1.fifo' ] && [ ! -e '$D/needs/s1' ] && [ -e '$D/s1' ]"
 
-# The same prompt answered in the terminal instead: the next hook ends the waiting one.
-hook ask '"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}' '&'
-ask_pid=$(cat "$D/ask/s1.pid" 2>/dev/null)
-hook busy '"hook_event_name":"PostToolUse","tool_name":"Bash"'
+# Two prompts open at once in one chat (Claude runs tools side by side): each answer goes to its
+# own prompt, and another tool finishing doesn't close a prompt.
+ask out-a ls
+new_prompt; ka=$NEW
+ask out-b pwd
+new_prompt; kb=$NEW
+check "two prompts at once: two names" "[ -n '$ka' ] && [ -n '$kb' ] && [ '$ka' != '$kb' ]" "$ka $kb"
+echo "$allow" | "$BUSY" answer "$kb"
+sleep 0.5
+check "  answering the second answers the second only" "grep -q allow '$T/out-b' && [ ! -s '$T/out-a' ] && [ -p '$D/ask/$ka.fifo' ]"
+hook busy '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"date"}'
 sleep 0.3
-check "answered in the terminal: the waiting prompt ends, says nothing" "! kill -0 ${ask_pid:-999999} 2>/dev/null && [ ! -s '$T/out' ] && [ ! -e '$D/ask/s1.json' ]"
-check "answer for a prompt that's gone: refused" "! echo '{}' | \"$BUSY\" answer s1"
-check "answer with a bad session name: refused" "! echo '{}' | \"$BUSY\" answer '../x'"
+check "  another tool finishing leaves the first open" "[ -p '$D/ask/$ka.fifo' ] && [ -e '$D/needs/s1' ]"
+ka_pid=$(cat "$D/ask/$ka.pid" 2>/dev/null)
+hook busy '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}'
+sleep 0.3
+check "  its own tool running (answered in the terminal) ends it, says nothing" "! kill -0 ${ka_pid:-999999} 2>/dev/null && [ ! -s '$T/out-a' ] && [ ! -e '$D/ask/$ka.json' ] && [ ! -e '$D/needs/s1' ]"
+
+# Typing something new ends every prompt the chat had open.
+ask out-c whoami
+new_prompt; kc=$NEW
+ask out-d id
+new_prompt; kd=$NEW
+hook busy '"hook_event_name":"UserPromptSubmit"'
+sleep 0.3
+check "a new message: every open prompt of the chat ends" "[ -z \"\$(prompts)\" ] && [ ! -s '$T/out-c' ] && [ ! -s '$T/out-d' ]"
+check "answer for a prompt that's gone: refused" "! echo '$allow' | \"$BUSY\" answer '$kc'"
+check "answer with a bad name: refused" "! echo '{}' | \"$BUSY\" answer '../x' && ! echo '{}' | \"$BUSY\" answer '.x'"
+check "a log of what happened" "grep -q '$k1: prompt for Bash' '$D/.log' && grep -q '$k1: answered from outside' '$D/.log' && grep -q '$ka: answered in the terminal' '$D/.log' && grep -q '$kc: ended (the chat moved on)' '$D/.log' && grep -q \"$kc: an answer came for a prompt that's gone\" '$D/.log'" "$(cat "$D/.log"; echo "k1=$k1 ka=$ka kc=$kc")"
 
 # Waiting for you keeps the computer awake 3 s ("15 minutes"), then the waiting minute (2 s).
 hook busy '"hook_event_name":"Stop"'
@@ -99,7 +136,7 @@ check "  still shown as waiting for you" "[ -e '$D/needs/s1' ] && \"$BUSY\" stat
 ( "$T/bin/claude" -c "\"$BUSY\" ask <<< '{\"session_id\":\"s9\",\"hook_event_name\":\"PermissionRequest\"}' > /dev/null &
     sleep 0.5; kill -9 \$\$" ) 2>/dev/null
 sleep 2.5
-check "claude gone: its waiting prompt ends" "[ ! -e '$D/ask/s9.pid' ] && [ ! -e '$D/needs/s9' ]"
+check "claude gone: its waiting prompt ends" "! ls '$D/ask' | grep -q '^s9\\.' && [ ! -e '$D/needs/s9' ]"
 
 # Switches off.
 touch "$HOME/.claude/accounts/lights-off"
@@ -109,5 +146,5 @@ check "lights off: lights stay steady" "[ \"\$(power)\" = \"$STEADY\" ]"
 touch "$HOME/.claude/accounts/ask-off"
 hook busy '"hook_event_name":"UserPromptSubmit"'
 hook ask '"hook_event_name":"PermissionRequest","tool_name":"Bash"'
-check "notifications off: ask returns at once, still needs you" "[ ! -e '$D/ask/s1.fifo' ] && [ -e '$D/needs/s1' ]"
+check "notifications off: ask returns at once, still needs you" "[ -z \"\$(prompts)\" ] && [ -e '$D/needs/s1' ]"
 exit $fails

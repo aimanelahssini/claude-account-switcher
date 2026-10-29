@@ -71,7 +71,7 @@ PY" "$(cat "$T/msg.json")"
 tap 999 "$(nonce):1"
 tap 4242 "abcdef:1"
 sleep 2
-check "a tap from another chat or an old message: ignored" "[ ! -s '$T/out-s1' ] && [ -e '$D/ask/s1.json' ] && [ \"\$(calls answerCallbackQuery)\" = 2 ]"
+check "a tap from another chat or an old message: ignored" "[ ! -s '$T/out-s1' ] && ls '$D/ask' | grep -q '^s1\..*json$' && [ \"\$(calls answerCallbackQuery)\" = 2 ]"
 # Your tap on option 2.
 tap 4242 "$(nonce):2"
 sleep 2
@@ -82,7 +82,7 @@ check "  the message keeps the text, loses the buttons, says what you picked" "l
 hook ask s2 "$REQ" '&'
 sleep 3
 check "another prompt: sent" "[ \"\$(calls sendMessage)\" = 2 ]"
-hook busy s2 '"hook_event_name":"PostToolUse","tool_name":"Bash"'
+hook busy s2 '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"rm -f pezei.py","description":"Delete pezei.py"}'
 sleep 4
 check "answered on the laptop: the message says so" "last editMessageText | grep -q 'Answered on the laptop'" "$(last editMessageText)"
 
@@ -91,7 +91,7 @@ hook ask s3 "$REQ" '&'
 sleep 3
 "$HERE/../claude-account" phone sleeping
 check "going to sleep: the message says so, no buttons" "last editMessageText | grep -q 'went to sleep' && ! helper" "$(last editMessageText)"
-hook busy s3 '"hook_event_name":"PostToolUse","tool_name":"Bash"'
+hook busy s3 '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"rm -f pezei.py","description":"Delete pezei.py"}'
 
 # Nothing waiting: the helper isn't running.
 sleep 1
@@ -103,7 +103,7 @@ sent=$(calls sendMessage)
 echo "\"$BUSY\" ask <<< '{\"session_id\":\"s4\",$REQ}' > \"$T/out-s4\" &" | sed 's/^/CLAUDE_BUSY_LOCKED=1 /' > "$T/cmds"
 sleep 4
 check "screen locked: sent" "[ \"\$(calls sendMessage)\" = $((sent + 1)) ]"
-hook busy s4 '"hook_event_name":"PostToolUse","tool_name":"Bash"'
+hook busy s4 '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"rm -f pezei.py","description":"Delete pezei.py"}'
 sleep 3
 
 # Nobody answers with the lid closed: when the wait for you runs out (15 minutes, 3 s here) and
@@ -114,7 +114,7 @@ for s in s1 s2 s3 s4; do hook idle $s '"hook_event_name":"Stop"'; done   # those
 echo "CLAUDE_BUSY_NEEDS=3 CLAUDE_BUSY_WAIT=1 \"$BUSY\" ask <<< '{\"session_id\":\"s6\",$REQ}' > \"$T/out-s6\" &" > "$T/cmds"
 sleep 9
 check "the wait runs out, lid closed: \"went to sleep\" before the laptop sleeps" "last editMessageText | grep -q 'went to sleep' && [ ! -r '$D/.holder' ]" "sent=$(calls sendMessage) files=$(ls -A $D | tr '\n' ' ') needs=$(ls $D/needs | tr '\n' ' ') holder=$(cat $D/.holder 2>/dev/null) out6=$(cat $T/out-s6)"
-hook busy s6 '"hook_event_name":"PostToolUse","tool_name":"Bash"'
+hook busy s6 '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"rm -f pezei.py","description":"Delete pezei.py"}'
 sleep 1
 
 # Turned off: never sent.
@@ -124,6 +124,6 @@ sent=$(calls sendMessage)
 hook ask s5 "$REQ" '&'
 sleep 3
 check "turned off: nothing sent, no helper" "[ \"\$(calls sendMessage)\" = $sent ] && ! helper"
-hook busy s5 '"hook_event_name":"PostToolUse","tool_name":"Bash"'
+hook busy s5 '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"rm -f pezei.py","description":"Delete pezei.py"}'
 check "every call used the bot's token" "! grep -v '\"token\": \"123:abc\"' '$T/api.log' | grep -q ."
 exit $fails

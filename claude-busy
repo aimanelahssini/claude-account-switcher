@@ -5,7 +5,8 @@
 #   claude-busy idle     a session is done
 #   claude-busy needs    a session waits for you (a permission prompt or a question)
 #   claude-busy ask      a permission prompt: waits for an answer from the notification
-#   claude-busy answer SESSION   (the top bar) passes that answer on, read from stdin
+#   claude-busy answer PROMPT    (the top bar, the phone) passes that answer on, read from stdin
+#                        (PROMPT is SESSION.NUMBER: each waiting prompt has its own)
 #   claude-busy lights   puts the lights in line with the switches
 #   claude-busy off-when-done on|off|now   turn the computer off once every chat has really
 #                        finished (the top bar's menu); `now` skips the last minute's warning
@@ -116,13 +117,59 @@ hold_on() {
         --who="Claude Code" --why="Claude is working" "$@" < /dev/null > /dev/null 2>&1
 }
 
-# This session stops waiting for you; a permission prompt still open in a notification goes.
+# What happened to prompts and answers, to find out why one didn't apply (cleared at reboot).
+log() {
+    printf '%(%F %T)T %s\n' -1 "$*" >> "$DIR/.log" 2>/dev/null   # a dotfile: other files here are chats
+}
+
+# End one waiting prompt (it was answered in the terminal, or its chat moved on).
+drop_ask() {
+    local a
+    [ -r "$DIR/ask/$1.pid" ] && read -r a < "$DIR/ask/$1.pid" && kill "$a" 2>/dev/null
+    rm -f "$DIR/ask/$1.pid" "$DIR/ask/$1.json" "$DIR/ask/$1.fifo"
+}
+
+asks_of() {
+    local f
+    for f in "$DIR"/ask/"$id".*.json; do [ -e "$f" ] && { f=${f##*/}; echo "${f%.json}"; }; done
+}
+
+# This session stops waiting for you: every prompt it had open goes (you typed something new,
+# or it finished).
 unneed() {
+    local k
+    for k in $(asks_of); do
+        drop_ask "$k"
+        log "$k: ended (the chat moved on)"
+    done
     rm -f "$DIR/needs/$id"
-    if [ -r "$DIR/ask/$id.pid" ]; then
-        read -r a < "$DIR/ask/$id.pid" && kill "$a" 2>/dev/null
-        rm -f "$DIR/ask/$id.pid" "$DIR/ask/$id.json" "$DIR/ask/$id.fifo"
+}
+
+# A tool ran or was refused: the prompt for that same tool call was answered (in the terminal).
+# Other prompts of the session (Claude can run several tools at once) stay open.
+unneed_tool() {
+    local k keys
+    keys=$(asks_of)
+    if [ -n "$keys" ]; then
+        for k in $(printf '%s' "$json" | python3 -c '
+import json, os, sys
+try:
+    done = json.loads(sys.stdin.readline())
+except ValueError:
+    sys.exit()
+same = lambda r: r.get("tool_name") == done.get("tool_name") and r.get("tool_input") == done.get("tool_input")
+for key in sys.argv[2:]:
+    try:
+        with open(os.path.join(sys.argv[1], key + ".json")) as f:
+            if same(json.load(f)):
+                print(key)
+    except (OSError, ValueError):
+        pass' "$DIR/ask" $keys); do
+            drop_ask "$k"
+            log "$k: answered in the terminal"
+        done
     fi
+    [ -n "$(asks_of)" ] || rm -f "$DIR/needs/$id"
 }
 
 # This session waits for you ($1: permission, question or plan).
@@ -257,10 +304,14 @@ busy)
     get tool_name
     # A question or a plan to approve: Claude waits for you from here on.
     if [ "$event" = PreToolUse ] && { [ "$v" = AskUserQuestion ] || [ "$v" = ExitPlanMode ]; }; then
-        unneed
+        [ -n "$(asks_of)" ] || rm -f "$DIR/needs/$id"
         [ "$v" = AskUserQuestion ] && need question || need plan
     else
-        unneed
+        case $event in
+        UserPromptSubmit) unneed ;;
+        PostToolUse|PostToolUseFailure|PermissionDenied) unneed_tool ;;
+        *) [ -n "$(asks_of)" ] || rm -f "$DIR/needs/$id" ;;   # another tool starting: prompts stay
+        esac
         echo "$pid" > "$DIR/$id"
     fi
     hold_on
@@ -294,39 +345,47 @@ ask)
     [ -e "$ASK_OFF" ] && ! phone_on && exit 0
     A="$DIR/ask"
     [ -d "$A" ] || mkdir -p -m 700 "$A"
-    rm -f "$A/$id.fifo"
-    mkfifo -m 600 "$A/$id.fifo" || exit 0
-    printf '%s\n' "$json" > "$A/$id.json.tmp" && mv "$A/$id.json.tmp" "$A/$id.json"
-    echo $$ > "$A/$id.pid"
+    # Each prompt its own name: a chat can have several open at once.
+    key="$id.$$"
+    mkfifo -m 600 "$A/$key.fifo" || exit 0
+    printf '%s\n' "$json" > "$A/$key.json.tmp" && mv "$A/$key.json.tmp" "$A/$key.json"
+    echo $$ > "$A/$key.pid"
+    get tool_name
+    log "$key: prompt for $v"
     # Your phone gets it too once you're away (one helper for all prompts; it exits when done).
     phone_on && ! phoning && setsid -f "$ACCOUNT_CMD" phone run < /dev/null > /dev/null 2>&1
-    trap 'rm -f "$A/$id.fifo" "$A/$id.pid" "$A/$id.json"; exit 0' TERM INT
-    exec 3<> "$A/$id.fifo"
+    trap 'rm -f "$A/$key.fifo" "$A/$key.pid" "$A/$key.json"; exit 0' TERM INT
+    exec 3<> "$A/$key.fifo"
     answer=
     # Blocks without using the CPU; once a minute it checks that claude is still there.
     while :; do
         if read -t "$ASK_CHECK_SECONDS" -r answer <&3; then break; fi
         [ -n "$pid" ] && [ ! -d "/proc/$pid" ] && break
     done
-    rm -f "$A/$id.fifo" "$A/$id.pid" "$A/$id.json"
+    rm -f "$A/$key.fifo" "$A/$key.pid" "$A/$key.json"
     case $answer in
     '{'*)
         printf '%s\n' "$answer"
-        rm -f "$DIR/needs/$id"
+        log "$key: answered from outside the terminal: ${answer:0:160}"
+        [ -n "$(asks_of)" ] || rm -f "$DIR/needs/$id"
         echo "$pid" > "$DIR/$id"
         lights
         ;;
+    *) log "$key: ended without an answer (claude went away)" ;;
     esac
     ;;
 answer)
     # The top bar's answer to a permission prompt (a hook decision, one line on stdin).
-    id=$2
-    case $id in ''|*[!A-Za-z0-9-]*) exit 2 ;; esac
+    key=$2
+    case $key in ''|.*|*..*|*[!A-Za-z0-9.-]*) exit 2 ;; esac
     IFS= read -r line
     case $line in '{'*) ;; *) exit 2 ;; esac
-    F="$DIR/ask/$id.fifo"
-    [ -p "$F" ] && [ -r "$DIR/ask/$id.pid" ] || exit 1
-    timeout 5 sh -c 'printf "%s\n" "$1" > "$2"' _ "$line" "$F"
+    F="$DIR/ask/$key.fifo"
+    if ! [ -p "$F" ] || ! [ -r "$DIR/ask/$key.pid" ]; then
+        log "$key: an answer came for a prompt that's gone"
+        exit 1
+    fi
+    timeout 5 sh -c 'printf "%s\n" "$1" > "$2"' _ "$line" "$F" || { log "$key: couldn't pass the answer on"; exit 1; }
     ;;
 hold)
     echo $$ > "$HOLDER"

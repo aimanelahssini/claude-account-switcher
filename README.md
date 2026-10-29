@@ -34,8 +34,8 @@ without restarting, and see how much of each account's 5-hour limit is used.</p>
 - **No sleep while Claude works.** Close the lid mid-task and the laptop keeps going until
   Claude is done, then does what closing the lid normally does.
 - **Tells you when Claude needs you.** A white blinking dot and the chat's name in the top
-  bar (click: that chat's window), and permission prompts as notifications with **Yes**,
-  **Always** and **No**. On ThinkPads, the lid logo and the power light blink too.
+  bar (click: that chat's window), and permission prompts on a card with the terminal's own
+  options. On ThinkPads, the lid logo and the power light blink too.
 - **A CLI too.** Everything works from the terminal with `claude-account`.
 
 <p align="center"><img src="docs/history.png" width="380" alt="History panel in percent: 53% of the 5-hour limit, orange hourly bars for the last 24 hours, and recent 5-hour windows with their peak"> <img src="docs/history-tokens.png" width="380" alt="The same panel switched to tokens: 13M tokens in the last 24 hours, hourly bars in tokens with the busiest hour, and tokens per window"></p>
@@ -139,13 +139,18 @@ When a chat stops for a permission prompt, a question or a plan to approve:
 
 <p align="center"><img src="docs/flash.gif" width="600" alt="Hovering the mascot shows the chats' bars; clicking one brings its window forward from behind another, with an orange frame around it that fades away"></p>
 
-- **Notification**, for permission prompts: the project as its title, the request in plain
-  words and the exact command, and **Yes**, **Always** (when Claude Code offers "don't ask
-  again") and **No**. The prompt stays open in the terminal too; whichever you answer first
-  counts, and the other goes away by itself. No notification for the chat you're looking at.
-  **No** stops Claude like the terminal's No does, so you can tell it what to do instead.
+- **A card for permission prompts**, at the top of the screen, laid out like the terminal's:
+  the project and the chat, the request (*Bash command*, the command, Claude's description),
+  *Do you want to proceed?* and the terminal's options in full, in Claude Code's own words:
+  **1. Yes**, **2. Yes, and don't ask again for … commands in …** (or *always allow access to
+  …*) when Claude offers it, and **No**. Click one and Claude goes on. The prompt stays open in
+  the terminal too; whichever you answer first counts, and the card goes away by itself. Each
+  prompt has its own card, one after another when a chat asks several things at once; ×
+  sets one aside; clicking the header opens the chat. No card for the chat you're looking
+  at: it shows when you look elsewhere. If an answer can't be delivered (the prompt was
+  answered meanwhile), it tells you. **No** stops Claude like the terminal's No does.
 
-<p align="center"><img src="docs/notification.png" width="520" alt="Notification titled listr: Delete pezei.py? — $ rm -f pezei.py, with Yes, Always and No buttons"></p>
+<p align="center"><img src="docs/card.png" width="532" alt="A card at the top of the screen: listr, Fix the poster upload; Bash command; rm -f pezei.py; Delete pezei.py; Do you want to proceed?; 1. Yes; 2. Yes, and don't ask again for rm -f pezei.py commands in the project; 3. No"></p>
 
 - **On your phone:** see [Ask on my phone](#ask-on-my-phone).
 - **Sleep:** a chat that waits for you keeps the computer awake 15 minutes (plus the waiting

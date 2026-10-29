@@ -2,6 +2,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import * as Dialog from 'resource:///org/gnome/shell/ui/dialog.js';
@@ -276,6 +277,58 @@ function shorten(text, n) {
     return text.length > n ? `${text.slice(0, n - 1).trimEnd()}…` : text;
 }
 
+function homeShort(path) {
+    const home = GLib.get_home_dir();
+    return path && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path ?? '';
+}
+
+// A permission prompt as the terminal shows it: {title, code, description}.
+function promptView(tool, input = {}) {
+    switch (tool) {
+    case 'Bash':
+        return {title: 'Bash command', code: input.command ?? '', description: input.description ?? ''};
+    case 'Edit':
+    case 'MultiEdit':
+    case 'NotebookEdit':
+        return {title: 'Edit file', code: homeShort(input.file_path ?? input.notebook_path), description: ''};
+    case 'Write':
+        return {title: GLib.file_test(input.file_path ?? '', GLib.FileTest.EXISTS) ? 'Edit file' : 'Create file',
+            code: homeShort(input.file_path), description: ''};
+    case 'Read':
+        return {title: 'Read file', code: homeShort(input.file_path), description: ''};
+    case 'WebFetch':
+        return {title: 'Fetch', code: input.url ?? '', description: input.prompt ?? ''};
+    case 'WebSearch':
+        return {title: 'Web search', code: input.query ?? '', description: ''};
+    default: {
+        const mcp = /^mcp__(.+?)__(.+)$/.exec(tool ?? '');
+        return {title: mcp ? `${mcp[1]} - ${mcp[2]} (MCP)` : tool ?? 'Tool', code: JSON.stringify(input, null, 1), description: ''};
+    }
+    }
+}
+
+// The terminal's options for a prompt, in Claude Code's own words: [[label, decision]]. Its
+// "switch to auto mode" is left out (a mode, not an answer). Same as claude-account's phone.
+function promptOptions(request) {
+    const suggestions = (request.permission_suggestions ?? []).filter(x => x.type !== 'setMode');
+    const rules = suggestions.filter(x => x.type === 'addRules').flatMap(x => x.rules ?? [])
+        .map(r => r.ruleContent || r.toolName || '').map(r => r.endsWith(':*') ? r.slice(0, -2) : r);
+    const dirs = suggestions.filter(x => x.type === 'addDirectories').flatMap(x => x.directories ?? []).map(homeShort);
+    let always = null;
+    if (rules.length && !dirs.length)
+        always = `Yes, and don't ask again for ${rules.join(', ')} commands in ${homeShort(request.cwd)}`;
+    else if (dirs.length && !rules.length)
+        always = `Yes, and always allow access to ${dirs.join(', ')} from this project`;
+    else if (dirs.length && rules.length)
+        always = dirs.length === 1 && rules.length === 1 ? `Yes, and allow access to ${dirs[0]} and ${rules[0]} commands`
+            : `Yes, and allow ${dirs.join(', ')} access and ${rules.join(', ')} commands`;
+    return [
+        ['Yes', {behavior: 'allow'}],
+        ...always ? [[always, {behavior: 'allow', updatedPermissions: suggestions}]] : [],
+        ['No', {behavior: 'deny', message: 'The user said no.', interrupt: true}],
+    ];
+}
+
 // A permission prompt in plain words: [question, detail].
 function describeRequest(tool, input = {}) {
     const name = path => GLib.path_get_basename(path || '');
@@ -399,7 +452,10 @@ export default class ClaudeAccountExtension extends Extension {
         this._needs = [];
         this._needsKey = '';
         this._titles = new Map();   // transcript -> chat title
-        this._asks = new Map();     // session -> notification
+        this._asks = new Map();     // prompt (chat.n) -> {key, input, entry}
+        this._asksAside = new Set();   // prompts you closed the card of
+        // Looking at a chat hides its card (its own prompt is right there); looking away shows it.
+        global.display.connectObject('notify::focus-window', () => this._showAsk(), this);
         this._dirMonitors = [];
         for (const [dir, sync] of [[BUSY_DIR, () => { this._syncBusy(); this._syncOffAt(); }], [NEEDS_DIR, () => this._syncBusy()],
             [ASK_DIR, () => this._syncAsks()]]) {
@@ -420,7 +476,7 @@ export default class ClaudeAccountExtension extends Extension {
         // Our banners open expanded, with their Yes / Always / No buttons showing.
         Main.messageTray.connectObject('queue-changed', () => GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             const tray = Main.messageTray;
-            if (tray._banner && !tray._banner.expanded && [...this._asks?.values() ?? [], this._offNotice].includes(tray._notification))
+            if (tray._banner && !tray._banner.expanded && this._offNotice && tray._notification === this._offNotice)
                 tray._banner.expand(false);
             return GLib.SOURCE_REMOVE;
         }), this);
@@ -443,11 +499,12 @@ export default class ClaudeAccountExtension extends Extension {
         Main.screenShield?.disconnectObject(this);
         this._spin(false);
         this._blink(false);
-        for (const n of this._asks?.values() ?? [])
-            n.destroy();
+        this._askCard?.destroy();
+        this._askCard = null;
         this._offNotice?.destroy();
         this._offNotice = null;
         this._asks = new Map();
+        this._asksAside = new Set();
         this._source?.destroy();
         this._source = null;
         this._monitor?.cancel();
@@ -470,7 +527,10 @@ export default class ClaudeAccountExtension extends Extension {
         this._tip = null;
         this._tooltip = null;
         this._tabsRow = null;
-        this._buttons?.forEach(b => b._menu?.destroy());
+        this._buttons?.forEach(b => {
+            b._menu?.destroy();   // already gone with their buttons when the top bar item was
+            b._menu = null;
+        });
         this._options?.destroy();
         this._options = null;
         this._optionsManager = null;
@@ -731,71 +791,140 @@ export default class ClaudeAccountExtension extends Extension {
         this._source.addNotification(n);
     }
 
-    // ---- permission prompts as notifications ----------------------------------------
+    // ---- permission prompts: a card like the terminal's prompt -------------------------
+    // Each waiting prompt (claude-busy's ask/<chat>.<n>.json) gets a card at the top of the
+    // screen with the terminal's options, one at a time, oldest first. It goes when it's
+    // answered (here, in the terminal or on the phone); × sets it aside. Not shown for the chat
+    // in front of you (its own prompt is right there): it waits until you look elsewhere.
     _syncAsks() {
-        const ids = new Set(this._sessionFiles(ASK_DIR).filter(n => n.endsWith('.json')).map(n => n.slice(0, -5)));
-        for (const [id, n] of this._asks) {
-            if (!ids.has(id)) {
-                this._asks.delete(id);
-                n.destroy();   // answered in the terminal, or the chat went away
+        const keys = this._sessionFiles(ASK_DIR).filter(n => n.endsWith('.json')).map(n => n.slice(0, -5));
+        for (const key of [...this._asks.keys()]) {
+            if (!keys.includes(key))
+                this._asks.delete(key);   // answered, or the chat went away
+        }
+        for (const key of keys) {
+            if (this._asks.has(key))
+                continue;
+            let input;
+            try {
+                input = JSON.parse(readText(GLib.build_filenamev([ASK_DIR, `${key}.json`])));
+            } catch {
+                continue;
             }
+            const id = key.replace(/\.\d+$/, '');
+            const entry = this._readNeeds().find(e => e.id === id) ?? {id, cwd: input.cwd, transcript: input.transcript_path, pid: 0};
+            this._asks.set(key, {key, input, entry});
         }
-        for (const id of ids) {
-            if (!this._asks.has(id))
-                this._notifyAsk(id);
-        }
+        this._showAsk();
     }
 
-    _notifyAsk(id) {
-        // The prompt can be there for the phone only (desktop notifications turned off).
-        if (!this._option('ask'))
-            return;
-        let input;
-        try {
-            input = JSON.parse(readText(GLib.build_filenamev([ASK_DIR, `${id}.json`])));
-        } catch {
-            return;
-        }
-        const entry = this._readNeeds().find(e => e.id === id) ??
-            {id, cwd: input.cwd, transcript: input.transcript_path, pid: 0};
-        // You're looking at that chat already: its own prompt is right there.
+    // The oldest prompt not set aside, unless you're looking at its chat.
+    _showAsk() {
         const focus = global.display.focus_window;
-        if (focus && focus === this._chatWindow(entry))
+        const next = this._option('ask') ? [...this._asks.values()].find(a => !this._asksAside.has(a.key) &&
+            !(focus && focus === this._chatWindow(a.entry))) : null;
+        if (next?.key === this._askCard?._key)
             return;
-        const [question, detail] = describeRequest(input.tool_name, input.tool_input);
-        if (!this._source) {
-            this._source = new MessageTray.Source({title: 'Claude Code',
-                icon: Gio.FileIcon.new(this.dir.get_child('icons').get_child('claude-code.svg'))});
-            this._source.connect('destroy', () => { this._source = null; });
-            Main.messageTray.add(this._source);
-        }
-        const n = new MessageTray.Notification({source: this._source, title: this._projectName(entry),
-            // GNOME shows a notification's text on one line.
-            body: detail ? `${question} — ${shorten(detail, 300)}` : question,
-            // Claude is stuck until you answer: it stays until then (or until the terminal's answer).
-            urgency: MessageTray.Urgency.CRITICAL});
-        const decide = decision => this._answer(id, {hookSpecificOutput: {hookEventName: 'PermissionRequest', decision}});
-        n.addAction('Yes', () => decide({behavior: 'allow'}));
-        const always = (input.permission_suggestions ?? []).filter(x => x.type !== 'setMode');
-        if (always.length)
-            n.addAction('Always', () => decide({behavior: 'allow', updatedPermissions: always}));
-        n.addAction('No', () => decide({behavior: 'deny', message: 'The user said no (from a notification).', interrupt: true}));
-        n.connect('activated', () => this._openChat(entry));
-        n.connect('destroy', () => {
-            if (this._asks.get(id) === n)
-                this._asks.delete(id);
-        });
-        this._asks.set(id, n);
-        this._source.addNotification(n);
+        this._askCard?.destroy();
+        this._askCard = null;
+        if (next)
+            this._askCard = this._makeAskCard(next);
     }
 
-    _answer(id, decision) {
+    _makeAskCard({key, input, entry}) {
+        const card = new St.BoxLayout({style_class: 'claude-acct-ask', vertical: true, reactive: true, opacity: 0});
+        card._key = key;
+        const view = promptView(input.tool_name, input.tool_input);
+        // Header: Claude, the project and the chat; × sets it aside. Clicking it opens the chat.
+        const head = new St.Button({style_class: 'claude-acct-ask-head', x_expand: true, x_align: Clutter.ActorAlign.FILL,
+            child: new St.BoxLayout({style_class: 'claude-acct-ask-head-box', x_expand: true, x_align: Clutter.ActorAlign.START})});
+        head.child.add_child(new St.Icon({gicon: Gio.FileIcon.new(this.dir.get_child('icons').get_child('claude-code.svg')),
+            style_class: 'claude-acct-ask-icon'}));
+        head.child.add_child(new St.Label({text: this._projectName(entry), style_class: 'claude-acct-ask-project',
+            y_align: Clutter.ActorAlign.CENTER}));
+        const chat = this._chatName(entry);
+        if (chat !== this._projectName(entry))
+            head.child.add_child(new St.Label({text: chat, style_class: 'claude-acct-ask-chat', x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER}));
+        head.connect('clicked', () => this._openChat(entry));
+        const more = this._asks.size - this._asksAside.size;
+        const top = new St.BoxLayout();
+        top.add_child(head);
+        if (more > 1)
+            top.add_child(new St.Label({text: `${more} waiting`, style_class: 'claude-acct-ask-more', y_align: Clutter.ActorAlign.CENTER}));
+        const close = new St.Button({style_class: 'claude-acct-ask-close', child: new St.Icon({icon_name: 'window-close-symbolic', icon_size: 14}),
+            y_align: Clutter.ActorAlign.CENTER, accessible_name: 'Set aside'});
+        close.connect('clicked', () => {
+            this._asksAside.add(key);
+            this._showAsk();
+        });
+        top.add_child(close);
+        card.add_child(top);
+        // The prompt, as the terminal shows it.
+        card.add_child(new St.Label({text: view.title, style_class: 'claude-acct-ask-title'}));
+        if (view.code) {
+            const code = new St.Label({text: shorten(view.code, 700), style_class: 'claude-acct-ask-code'});
+            code.clutter_text.line_wrap = true;
+            code.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+            card.add_child(code);
+        }
+        if (view.description) {
+            const description = new St.Label({text: shorten(view.description, 300), style_class: 'claude-acct-ask-description'});
+            description.clutter_text.line_wrap = true;
+            card.add_child(description);
+        }
+        card.add_child(new St.Label({text: 'Do you want to proceed?', style_class: 'claude-acct-ask-question'}));
+        // Its options, in full, one per line.
+        card._options = [];
+        promptOptions(input).forEach(([label, decision], i) => {
+            const text = new St.Label({text: `${i + 1}. ${label}`, x_expand: true});
+            text.clutter_text.line_wrap = true;
+            const option = new St.Button({style_class: 'claude-acct-ask-option', child: text, x_expand: true,
+                x_align: Clutter.ActorAlign.FILL});
+            option._label = label;
+            option.connect('clicked', () => {
+                card.reactive = false;
+                card._options.forEach(o => (o.reactive = false));
+                this._answer(key, {hookSpecificOutput: {hookEventName: 'PermissionRequest', decision}});
+            });
+            card._options.push(option);
+            card.add_child(option);
+        });
+        Main.layoutManager.addTopChrome(card);
+        // Top middle, under the top bar.
+        const monitor = Main.layoutManager.primaryMonitor;
+        card.width = Math.min(500, monitor.width - 32);
+        card.set_position(Math.round(monitor.x + (monitor.width - card.width) / 2), monitor.y + Main.panel.height + 10);
+        card.translation_y = -12;
+        card.ease({opacity: 255, translation_y: 0, duration: 160, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+        card.connect('destroy', () => {
+            if (this._askCard === card)
+                this._askCard = null;
+        });
+        return card;
+    }
+
+    // Passes your answer to the waiting prompt; says so if it couldn't (answered elsewhere).
+    _answer(key, decision) {
+        const failed = () => {
+            Main.notify('Claude', 'That prompt was already answered or closed, so this answer wasn\'t used.');
+            this._asks.delete(key);
+            this._askCard?.destroy();
+            this._showAsk();
+        };
         try {
-            const proc = Gio.Subprocess.new([BUSY_CMD, 'answer', id],
+            const proc = Gio.Subprocess.new([BUSY_CMD, 'answer', key],
                 Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
-            proc.communicate_utf8_async(`${JSON.stringify(decision)}\n`, null, () => {});
+            proc.communicate_utf8_async(`${JSON.stringify(decision)}\n`, null, (p, res) => {
+                try {
+                    p.communicate_utf8_finish(res);
+                } catch {}
+                if (!p.get_successful())
+                    failed();
+            });
         } catch (e) {
             console.log(`claude-account-switcher: answer failed: ${e.message}`);
+            failed();
         }
     }
 
@@ -1084,7 +1213,7 @@ export default class ClaudeAccountExtension extends Extension {
             const ask = new PopupMenu.PopupSwitchMenuItem('Permission prompts as notifications', this._option('ask'));
             ask.connect('toggled', (item, on) => this._setOption('ask', on));
             menu.addMenuItem(ask);
-            menu.addMenuItem(this._hint('Yes, Always or No without going to the terminal'));
+            menu.addMenuItem(this._hint('A card with the terminal\'s options, so you answer from anywhere'));
             // On the phone (Telegram), once set up with `claude-account phone`.
             if (GLib.file_test(GLib.build_filenamev([SLOTS, '.phone']), GLib.FileTest.EXISTS)) {
                 const phone = new PopupMenu.PopupSwitchMenuItem('Ask on my phone', this._option('phone'));
@@ -1160,7 +1289,10 @@ export default class ClaudeAccountExtension extends Extension {
             open(animate);
         };
         this._menuManager.addMenu(b._menu);
-        b.connect('destroy', () => b._menu?.destroy());
+        b.connect('destroy', () => {
+            b._menu?.destroy();
+            b._menu = null;
+        });
         return b._menu;
     }
 
