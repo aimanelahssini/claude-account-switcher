@@ -134,3 +134,17 @@
   background-color: rgba(255,255,255,0.06);
 }
 .claude-acct-ask-option:hover { background-color: rgba(215,119,87,0.85); }
+.claude-acct-ask-code.plan { font-family: inherit; font-size: 0.9em; }
+.claude-acct-ask-option-label { color: #fff; }
+.claude-acct-ask-option-description { color: rgba(255,255,255,0.6); font-size: 0.88em; margin-top: 2px; }
+.claude-acct-ask-option:checked { background-color: rgba(215,119,87,0.55); }
+.claude-acct-ask-question-head { spacing: 8px; margin-top: 4px; }
+.claude-acct-ask-chip {
+  background-color: rgba(215,119,87,0.25); color: #f0b9a4; border-radius: 6px;
+  padding: 1px 7px; font-size: 0.8em; font-weight: bold;
+}
+.claude-acct-ask-row { spacing: 8px; margin-top: 2px; }
+.claude-acct-ask-other { border-radius: 8px; padding: 6px 10px; color: rgba(255,255,255,0.7); }
+.claude-acct-ask-other:hover { background-color: rgba(255,255,255,0.08); color: #fff; }
+.claude-acct-ask-submit { border-radius: 8px; padding: 6px 16px; background-color: #d77757; color: #fff; font-weight: bold; }
+.claude-acct-ask-submit:hover { background-color: #e08a6d; }

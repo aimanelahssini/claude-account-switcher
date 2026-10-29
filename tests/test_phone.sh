@@ -106,6 +106,22 @@ check "screen locked: sent" "[ \"\$(calls sendMessage)\" = $((sent + 1)) ]"
 hook busy s4 '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"rm -f pezei.py","description":"Delete pezei.py"}'
 sleep 3
 
+# A question from Claude: its own choices as buttons; a tap answers it with that choice.
+lid closed
+QREQ='"cwd":"'"$T"'/home/Projects/listr","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which color do you prefer?","header":"Color","multiSelect":false,"options":[{"label":"Red","description":"Warm"},{"label":"Blue","description":"Calm"}]}]}'
+hook ask s7 "$QREQ" '&'
+sleep 3
+last sendMessage > "$T/q.json"
+check "a question: Claude's choices as buttons" "python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+labels = [r[0][\"text\"] for r in m[\"reply_markup\"][\"inline_keyboard\"]]
+sys.exit(not (labels == [\"1. Red\", \"2. Blue\"] and \"Which color do you prefer?\" in m[\"text\"] and \"Calm\" in m[\"text\"]))' '$T/q.json'" "$(cat "$T/q.json")"
+tap 4242 "$(nonce):2"
+sleep 2
+check "  a tap answers it with that choice" "grep -q '\"answers\": {\"Which color do you prefer?\": \"Blue\"}' '$T/out-s7'" "$(cat "$T/out-s7")"
+hook idle s7 '"hook_event_name":"Stop"'
+
 # Nobody answers with the lid closed: when the wait for you runs out (15 minutes, 3 s here) and
 # the laptop is about to sleep, the message says so first.
 [ -r "$D/.holder" ] && kill "$(cat "$D/.holder")" 2>/dev/null

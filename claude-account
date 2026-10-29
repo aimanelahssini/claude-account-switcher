@@ -635,7 +635,19 @@ def home_short(path):
 
 def prompt_options(request):
     """The terminal's options for this prompt: [(label, decision)]. Claude Code's own wording;
-    its "switch to auto mode" is left out (a mode, not an answer)."""
+    its "switch to auto mode" is left out (a mode, not an answer). A question's options are
+    Claude's own choices (one question with one pick only: more doesn't fit chat buttons). A
+    plan has none: Claude Code takes its approval only in the chat."""
+    tool, inp = request.get("tool_name"), request.get("tool_input") or {}
+    if tool == "AskUserQuestion":
+        qs = inp.get("questions") or []
+        if len(qs) != 1 or qs[0].get("multiSelect"):
+            return []
+        q = qs[0]
+        return [(o.get("label", ""), {"behavior": "allow", "updatedInput": {**inp, "answers": {q.get("question", ""): o.get("label", "")}}})
+                for o in q.get("options") or []]
+    if tool == "ExitPlanMode":
+        return []   # Claude Code takes a plan's approval only in the chat itself
     suggestions = [x for x in request.get("permission_suggestions") or [] if x.get("type") != "setMode"]
     rules = [r.get("ruleContent") or r.get("toolName", "") for x in suggestions if x.get("type") == "addRules"
              for r in x.get("rules", [])]
@@ -661,6 +673,19 @@ def prompt_text(request):
     tool, inp = request.get("tool_name", ""), request.get("tool_input") or {}
     cwd = request.get("cwd") or HOME
     project = os.path.basename(cwd) if cwd != HOME else "Claude Code"
+    if tool == "AskUserQuestion":
+        lines = [f"<b>{html(project)}</b>"]
+        for q in inp.get("questions") or []:
+            lines += ["", f"<b>{html(q.get('header', ''))}</b> {html(q.get('question', ''))}".strip()]
+            for i, o in enumerate(q.get("options") or [], 1):
+                lines.append(f"{i}. {html(o.get('label', ''))}" + (f" — <i>{html(o['description'])}</i>" if o.get("description") else ""))
+        if not prompt_options(request):
+            lines += ["", "<i>Several questions or choices: answer on the laptop.</i>"]
+        return "\n".join(lines)
+    if tool == "ExitPlanMode":
+        return "\n".join([f"<b>{html(project)}</b>", "<b>Ready to code?</b>", "Here is Claude's plan:",
+                          f"<pre>{html(inp.get('plan', '')[:2500])}</pre>",
+                          "<i>Approve it on the laptop: Claude Code only takes a plan's approval in the chat.</i>"])
     if tool == "Bash":
         title, body = "Bash command", [f"<pre>{html(inp.get('command', ''))}</pre>", html(inp.get("description", ""))]
     elif tool in ("Edit", "MultiEdit", "Write", "NotebookEdit"):
@@ -725,8 +750,8 @@ def phone_run():
                     text = prompt_text(request)
                     keyboard = [[{"text": f"{i}. {label}", "callback_data": f"{nonce}:{i}"}]
                                 for i, (label, _) in enumerate(options, 1)]
-                    msg = telegram("sendMessage", token, chat_id=chat, text=text, parse_mode="HTML",
-                                   reply_markup={"inline_keyboard": keyboard})
+                    extra = {"reply_markup": {"inline_keyboard": keyboard}} if keyboard else {}
+                    msg = telegram("sendMessage", token, chat_id=chat, text=text, parse_mode="HTML", **extra)
                     sent[sid] = {"message": msg["message_id"], "nonce": nonce, "text": text, "options": options}
             if not waiting and not sent:
                 return

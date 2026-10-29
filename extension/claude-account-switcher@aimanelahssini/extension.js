@@ -831,6 +831,128 @@ export default class ClaudeAccountExtension extends Extension {
             this._askCard = this._makeAskCard(next);
     }
 
+    // A request and its numbered options, as the terminal shows them.
+    _optionsBody(card, title, view, question, options, send) {
+        card.add_child(new St.Label({text: title, style_class: 'claude-acct-ask-title'}));
+        if (view.code) {
+            const code = new St.Label({text: shorten(view.code, 700), style_class: 'claude-acct-ask-code'});
+            code.clutter_text.line_wrap = true;
+            code.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+            card.add_child(code);
+        }
+        if (view.description) {
+            const description = new St.Label({text: shorten(view.description, 300), style_class: 'claude-acct-ask-description'});
+            description.clutter_text.line_wrap = true;
+            card.add_child(description);
+        }
+        const asking = new St.Label({text: question, style_class: 'claude-acct-ask-question'});
+        asking.clutter_text.line_wrap = true;
+        card.add_child(asking);
+        options.forEach(([label, decision], i) => {
+            const option = this._optionButton(`${i + 1}. ${label}`);
+            option._label = label;
+            option.connect('clicked', () => send(decision));
+            card._options.push(option);
+            card.add_child(option);
+        });
+    }
+
+    // A plan to approve: Claude Code takes a plan's approval only in the chat itself (it ignores
+    // answers from outside, tested), so the card shows the plan and takes you there.
+    _planBody(card, input, entry) {
+        card.add_child(new St.Label({text: 'Ready to code?', style_class: 'claude-acct-ask-title'}));
+        card.add_child(new St.Label({text: 'Here is Claude\'s plan:', style_class: 'claude-acct-ask-description'}));
+        const plan = new St.Label({text: shorten(input.tool_input?.plan ?? '', 1400), style_class: 'claude-acct-ask-code plan'});
+        plan.clutter_text.line_wrap = true;
+        plan.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+        card.add_child(plan);
+        const why = new St.Label({text: 'Approve it in the chat: Claude Code only takes a plan\'s approval there.',
+            style_class: 'claude-acct-ask-description'});
+        why.clutter_text.line_wrap = true;
+        card.add_child(why);
+        const open = new St.Button({style_class: 'claude-acct-ask-submit', label: 'Open the chat', x_align: Clutter.ActorAlign.START});
+        open.connect('clicked', () => this._openChat(entry));
+        card._open = open;
+        card.add_child(open);
+    }
+
+    _optionButton(text, description = '', toggle = false) {
+        const box = new St.BoxLayout({vertical: true, x_expand: true});
+        const label = new St.Label({text, x_expand: true, style_class: 'claude-acct-ask-option-label'});
+        label.clutter_text.line_wrap = true;
+        box.add_child(label);
+        if (description) {
+            const more = new St.Label({text: description, style_class: 'claude-acct-ask-option-description'});
+            more.clutter_text.line_wrap = true;
+            box.add_child(more);
+        }
+        const button = new St.Button({style_class: 'claude-acct-ask-option', child: box, x_expand: true,
+            x_align: Clutter.ActorAlign.FILL, toggle_mode: toggle});
+        button.text = text;
+        return button;
+    }
+
+    // Claude's question(s) and its own choices, as the terminal shows them. One question with one
+    // choice to pick: a click answers. Otherwise pick, then Submit. "Other…" opens the chat to
+    // type your own answer there. The answers go back the way the terminal sends them
+    // (the tool's input with "answers": question -> chosen label(s)).
+    _questionBody(card, input, send, entry) {
+        const questions = input.tool_input?.questions ?? [];
+        const quick = questions.length === 1 && !questions[0].multiSelect;
+        const picked = questions.map(() => new Set());
+        let submit = null;
+        const ready = () => picked.every(p => p.size > 0);
+        questions.forEach((q, n) => {
+            const head = new St.BoxLayout({style_class: 'claude-acct-ask-question-head'});
+            if (q.header)
+                head.add_child(new St.Label({text: q.header, style_class: 'claude-acct-ask-chip', y_align: Clutter.ActorAlign.CENTER}));
+            const text = new St.Label({text: q.question, style_class: 'claude-acct-ask-question', x_expand: true});
+            text.clutter_text.line_wrap = true;
+            head.add_child(text);
+            card.add_child(head);
+            const buttons = [];
+            (q.options ?? []).forEach((o, i) => {
+                const option = this._optionButton(`${i + 1}. ${o.label}`, o.description ?? '', !quick);
+                option._label = o.label;
+                option.connect('clicked', () => {
+                    if (quick) {
+                        send({behavior: 'allow', updatedInput: {...input.tool_input, answers: {[q.question]: o.label}}});
+                        return;
+                    }
+                    if (!q.multiSelect) {
+                        picked[n].clear();
+                        buttons.forEach(b => (b.checked = b === option));
+                    }
+                    if (option.checked)
+                        picked[n].add(o.label);
+                    else
+                        picked[n].delete(o.label);
+                    submit.reactive = ready();
+                    submit.opacity = ready() ? 255 : 120;
+                });
+                buttons.push(option);
+                card._options.push(option);
+                card.add_child(option);
+            });
+        });
+        const row = new St.BoxLayout({style_class: 'claude-acct-ask-row'});
+        const other = new St.Button({style_class: 'claude-acct-ask-other', label: 'Other… (answer in the chat)',
+            x_expand: true, x_align: Clutter.ActorAlign.START});
+        other.connect('clicked', () => this._openChat(entry));
+        row.add_child(other);
+        if (!quick) {
+            submit = new St.Button({style_class: 'claude-acct-ask-submit', label: 'Submit', reactive: false, opacity: 120});
+            submit.connect('clicked', () => {
+                const answers = Object.fromEntries(questions.map((q, n) => [q.question,
+                    (q.options ?? []).map(o => o.label).filter(l => picked[n].has(l)).join(', ')]));
+                send({behavior: 'allow', updatedInput: {...input.tool_input, answers}});
+            });
+            card._submit = submit;
+            row.add_child(submit);
+        }
+        card.add_child(row);
+    }
+
     _makeAskCard({key, input, entry}) {
         const card = new St.BoxLayout({style_class: 'claude-acct-ask', vertical: true, reactive: true, opacity: 0});
         card._key = key;
@@ -860,36 +982,19 @@ export default class ClaudeAccountExtension extends Extension {
         });
         top.add_child(close);
         card.add_child(top);
-        // The prompt, as the terminal shows it.
-        card.add_child(new St.Label({text: view.title, style_class: 'claude-acct-ask-title'}));
-        if (view.code) {
-            const code = new St.Label({text: shorten(view.code, 700), style_class: 'claude-acct-ask-code'});
-            code.clutter_text.line_wrap = true;
-            code.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
-            card.add_child(code);
-        }
-        if (view.description) {
-            const description = new St.Label({text: shorten(view.description, 300), style_class: 'claude-acct-ask-description'});
-            description.clutter_text.line_wrap = true;
-            card.add_child(description);
-        }
-        card.add_child(new St.Label({text: 'Do you want to proceed?', style_class: 'claude-acct-ask-question'}));
-        // Its options, in full, one per line.
+        // Your answer goes to this prompt; the card's buttons stop answering once one is sent.
         card._options = [];
-        promptOptions(input).forEach(([label, decision], i) => {
-            const text = new St.Label({text: `${i + 1}. ${label}`, x_expand: true});
-            text.clutter_text.line_wrap = true;
-            const option = new St.Button({style_class: 'claude-acct-ask-option', child: text, x_expand: true,
-                x_align: Clutter.ActorAlign.FILL});
-            option._label = label;
-            option.connect('clicked', () => {
-                card.reactive = false;
-                card._options.forEach(o => (o.reactive = false));
-                this._answer(key, {hookSpecificOutput: {hookEventName: 'PermissionRequest', decision}});
-            });
-            card._options.push(option);
-            card.add_child(option);
-        });
+        const send = decision => {
+            card.reactive = false;
+            card._options.forEach(o => (o.reactive = false));
+            this._answer(key, {hookSpecificOutput: {hookEventName: 'PermissionRequest', decision}});
+        };
+        if (input.tool_name === 'AskUserQuestion')
+            this._questionBody(card, input, send, entry);
+        else if (input.tool_name === 'ExitPlanMode')
+            this._planBody(card, input, entry);
+        else
+            this._optionsBody(card, view.title, view, 'Do you want to proceed?', promptOptions(input), send);
         Main.layoutManager.addTopChrome(card);
         // Top middle, under the top bar.
         const monitor = Main.layoutManager.primaryMonitor;

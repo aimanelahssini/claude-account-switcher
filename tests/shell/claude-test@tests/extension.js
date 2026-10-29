@@ -788,7 +788,7 @@ async function needsTest() {
     check('card: project and chat', texts.includes('listr') && texts.includes('Fix the poster upload'), texts.join(' | '));
     check('card: the terminal\'s prompt', ['Bash command', 'rm -f pezei.py', 'Delete pezei.py', 'Do you want to proceed?']
         .every(t => texts.includes(t)), texts.join(' | '));
-    const options = card?._options.map(o => o.child.text);
+    const options = card?._options.map(o => o.text);
     check('card: the terminal\'s options, in full', JSON.stringify(options) === JSON.stringify(['1. Yes',
         '2. Yes, and don\'t ask again for rm -f pezei.py commands in /home/u/Projects/listr', '3. No']), JSON.stringify(options));
     const shotStream = Gio.File.new_for_path(`${OUT}/card.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
@@ -818,7 +818,7 @@ async function needsTest() {
     for (const f of ['json', 'fifo', 'pid'])
         GLib.unlink(`${busy}/ask/s1.101.${f}`);
     await sleep(700);
-    check('card: then the next prompt', ext._askCard?._key === 's1.102' && ext._askCard._options[0].child.text === '1. Yes');
+    check('card: then the next prompt', ext._askCard?._key === 's1.102' && ext._askCard._options[0].text === '1. Yes');
     await click(ext._askCard._options[0]);
     check('card: Yes on the second answers the second', /"behavior":"allow"/.test(read(`${busy}/answer-s1.102.txt`)) &&
         !/updatedPermissions/.test(read(`${busy}/answer-s1.102.txt`)));
@@ -860,6 +860,55 @@ async function needsTest() {
     await sleep(600);
     check('card: looking away shows it', ext._askCard?._key === 's1.103');
     GLib.unlink(`${busy}/ask/s1.103.json`);
+    await sleep(400);
+
+    // A question from Claude: its own choices, with their descriptions; one click answers it,
+    // the way the terminal does (the tool's input with "answers").
+    const question = {question: 'Which color do you prefer?', header: 'Color', multiSelect: false,
+        options: [{label: 'Red', description: 'Warm'}, {label: 'Blue', description: 'Calm'}]};
+    prompt('s1.104');
+    write(`${busy}/ask/s1.104.json`, JSON.stringify({...request, tool_name: 'AskUserQuestion', tool_input: {questions: [question]}}));
+    await sleep(700);
+    const qtexts = all(ext._askCard).filter(a => a instanceof St.Label).map(a => a.text);
+    check('question: Claude\'s question and choices', ['Color', 'Which color do you prefer?', '1. Red', 'Warm', '2. Blue', 'Calm']
+        .every(t => qtexts.includes(t)) && !qtexts.includes('Do you want to proceed?'), qtexts.join(' | '));
+    const qshot = Gio.File.new_for_path(`${OUT}/question.png`).replace(null, false, Gio.FileCreateFlags.NONE, null);
+    await new Shell.Screenshot().screenshot_area(ext._askCard.x - 16, ext._askCard.y - 12, ext._askCard.width + 32, ext._askCard.height + 28, qshot);
+    qshot.close(null);
+    await click(ext._askCard._options[1]);
+    const qa = read(`${busy}/answer-s1.104.txt`);
+    check('question: a click answers it with that choice', /"answers":\{"Which color do you prefer\?":"Blue"\}/.test(qa) &&
+        /"behavior":"allow"/.test(qa) && /"questions":/.test(qa), qa.trim());
+    for (const f of ['json', 'fifo', 'pid'])
+        GLib.unlink(`${busy}/ask/s1.104.${f}`);
+    await sleep(500);
+    // Two questions, one of them pick-several: pick, then Submit.
+    prompt('s1.105');
+    write(`${busy}/ask/s1.105.json`, JSON.stringify({...request, tool_name: 'AskUserQuestion', tool_input: {questions: [question,
+        {question: 'Which sizes?', header: 'Sizes', multiSelect: true, options: [{label: 'S'}, {label: 'M'}, {label: 'L'}]}]}}));
+    await sleep(700);
+    const [red, , small, medium] = ext._askCard._options;
+    check('questions: Submit waits for every answer', !ext._askCard._submit.reactive);
+    await click(red);
+    await click(small);
+    await click(medium);
+    check('questions: picks show, Submit ready', red.checked && small.checked && medium.checked && ext._askCard._submit.reactive);
+    await click(ext._askCard._submit);
+    const qb = read(`${busy}/answer-s1.105.txt`);
+    check('questions: Submit sends every answer', /"Which color do you prefer\?":"Red"/.test(qb) && /"Which sizes\?":"S, M"/.test(qb), qb.trim());
+    for (const f of ['json', 'fifo', 'pid'])
+        GLib.unlink(`${busy}/ask/s1.105.${f}`);
+    await sleep(500);
+    // A plan: shown, approved in the chat (Claude Code takes a plan's approval only there).
+    write(`${busy}/ask/s1.106.json`, JSON.stringify({...request, tool_name: 'ExitPlanMode', tool_input: {plan: '1. Add the poster upload\n2. Test it'}}));
+    await sleep(700);
+    const ptexts = all(ext._askCard).filter(a => a instanceof St.Label).map(a => a.text);
+    check('plan: the plan, and a way to the chat', ptexts.includes('Ready to code?') && ptexts.some(t => t.includes('Add the poster upload')) &&
+        !!ext._askCard._open && ext._askCard._options.length === 0, ptexts.join(' | '));
+    await click(ext._askCard._open);
+    check('plan: Open the chat goes there', focused() === '✳ Fix the poster upload', focused());
+    GLib.unlink(`${busy}/ask/s1.106.json`);
+    Main.activateWindow(windowTitled('Something else'));
     await sleep(400);
 
     // Answered: back to the spinner (the other chat still works).

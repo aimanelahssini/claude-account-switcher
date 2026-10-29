@@ -152,6 +152,16 @@ When a chat stops for a permission prompt, a question or a plan to approve:
 
 <p align="center"><img src="docs/card.png" width="532" alt="A card at the top of the screen: listr, Fix the poster upload; Bash command; rm -f pezei.py; Delete pezei.py; Do you want to proceed?; 1. Yes; 2. Yes, and don't ask again for rm -f pezei.py commands in the project; 3. No"></p>
 
+- **Questions from Claude** (when it asks you to choose) get a card with its question and its
+  own choices, with their descriptions, like the terminal: one question with one choice to
+  pick, a click answers it; several questions or pick-several, pick then **Submit**.
+  **Other…** opens the chat to type your own answer. Your choice goes back the way the
+  terminal sends it, so Claude gets it as your answer.
+- **Plans to approve** get a card with the plan and **Open the chat**: Claude Code only takes
+  a plan's approval in the chat itself (it ignores answers from anywhere else).
+
+<p align="center"><img src="docs/question.png" width="532" alt="A card with Claude's question: Color, Which color do you prefer?, 1. Red (Warm), 2. Blue (Calm), and Other… (answer in the chat)"></p>
+
 - **On your phone:** see [Ask on my phone](#ask-on-my-phone).
 - **Sleep:** a chat that waits for you keeps the computer awake 15 minutes (plus the waiting
   minute), so the lights can tell you; then the lid's normal action runs as usual.
