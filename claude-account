@@ -18,6 +18,8 @@ uses the new login on its next request, so the current chat just continues.
   claude-account history [N]      recent 5-hour windows and how high each went
   claude-account auto-switch on|off   at 100% of the 5-hour limit, switch to the account
                                   with the most room left (on by default)
+  claude-account limit-hit TRANSCRIPT  a chat stopped at the usage limit (claude-busy calls this):
+                                  mark the account full and auto-switch right away
   claude-account keep-awake on|off    keep the computer awake while Claude works, lid closed
                                   too (claude-busy; on by default)
   claude-account ask on|off           permission prompts as notifications too (on by default)
@@ -411,6 +413,22 @@ def set_option(name, on):
         open(OPTION_OFF[name], "w").close()
 
 
+def roomiest(cur, out):
+    """The signed-in account with the most room left: a fresh reading first, then one kept from
+    before (the usage check can be refused for a while), and an ended window counts as empty."""
+    now = time.time()
+    room = []
+    for i, n in enumerate(slots()):
+        u = out.get(n) or {}
+        if n == cur or not isinstance(u.get("pct"), (int, float)):
+            continue
+        if (reset_time(u.get("resets_at")) or now + 1) <= now:
+            room.append((0, 0, i, n))
+        elif u["pct"] < 100:
+            room.append((1 if u.get("stale") else 0, u["pct"], i, n))
+    return min(room)[3] if room else None
+
+
 def auto_switch(cur, out):
     """The active account is at its 5-hour limit: move to the signed-in one with the most room."""
     now = time.time()
@@ -420,17 +438,71 @@ def auto_switch(cur, out):
     # A kept (stale) reading still counts while its window lasts.
     if u.get("stale") and (reset_time(u.get("resets_at")) or 0) < now:
         return
-    room = [(out[n]["pct"], i, n) for i, n in enumerate(slots())
-            if n != cur and isinstance(out.get(n, {}).get("pct"), (int, float))
-            and not out[n].get("stale") and out[n]["pct"] < 100]
-    if not room:
+    target = roomiest(cur, out)
+    if not target:
         return
-    target = min(room)[2]
     with locked():
         if current() != cur:
             return
         switch(target, auto=True)
     print(f"auto-switched {cur} -> {target}")
+
+
+def limit_stop(transcript):
+    """(when, resets at) of the usage-limit error a chat just stopped on, else None. Claude
+    Code may write it just after the StopFailure hook starts, so look again for a moment."""
+    for _ in range(10):
+        try:
+            with open(transcript, "rb") as f:
+                f.seek(max(0, os.fstat(f.fileno()).st_size - 65536))
+                lines = f.read().splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("type") not in ("assistant", "user"):
+                continue
+            if e.get("apiError") != "usage_limit_reached":
+                break
+            info = (e.get("apiErrorParams") or {}).get("rate_limit_info") or {}
+            when = reset_time(e.get("timestamp")) or time.time()
+            return when, info.get("resetsAt")
+        time.sleep(0.3)
+    return None
+
+
+def limit_hit(transcript):
+    """A chat stopped at the active account's limit: that account is at 100% whatever the last
+    usage check said, so switch now instead of after the next check (which may be refused)."""
+    hit = limit_stop(transcript)
+    if not hit:
+        return
+    when, resets = hit
+    with locked():
+        cur = current()
+        last_switch = max((h["t"] for h in read_history() if "switch" in h), default=0)
+        # It stopped on the account used before the last switch: already handled. (History times
+        # are whole seconds; a stop on the new account comes well over a second later.)
+        if not cur or when < last_switch + 1:
+            return
+        try:
+            out = read_json(USAGE_CACHE)
+        except (FileNotFoundError, ValueError):
+            out = {}
+        u = out.get(cur) or {}
+        reset = datetime.datetime.fromtimestamp(resets, datetime.timezone.utc).isoformat() \
+            if isinstance(resets, (int, float)) else u.get("resets_at")
+        out[cur] = {"pct": 100.0, "resets_at": reset}
+        with open(USAGE_CACHE + ".tmp", "w") as f:
+            json.dump(out, f)
+        os.replace(USAGE_CACHE + ".tmp", USAGE_CACHE)
+        target = roomiest(cur, out) if option("auto-switch") else None
+        if target:
+            switch(target, auto=True)
+            print(f"auto-switched {cur} -> {target}")
 
 
 def wait_for_refresh_lock():
@@ -898,6 +970,8 @@ def main():
             switch(a[1])
     elif a[0] == "usage":
         usage()
+    elif a[0] == "limit-hit" and len(a) == 2:
+        limit_hit(a[1])
     elif a[0] == "phone" and len(a) == 1:
         phone_setup()
     elif a[0] == "phone" and a[1] == "test":

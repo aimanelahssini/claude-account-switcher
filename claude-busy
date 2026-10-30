@@ -338,9 +338,15 @@ idle)
     session "$pid"
     get hook_event_name
     # "Waiting for your input" while a prompt is open: still waiting for you, not done.
-    [ "$v" = Notification ] && [ -e "$DIR/needs/$id" ] || unneed
+    event=$v
+    [ "$event" = Notification ] && [ -e "$DIR/needs/$id" ] || unneed
     rm -f "$DIR/$id"
     lights
+    # Stopped by an error: if it was the usage limit, switch accounts now (claude-account checks).
+    if [ "$event" = StopFailure ]; then
+        get transcript_path
+        [ -n "$v" ] && [ -x "$ACCOUNT_CMD" ] && ("$ACCOUNT_CMD" limit-hit "$v" >/dev/null 2>&1 &)
+    fi
     ;;
 needs)
     pid=$(claude_pid)

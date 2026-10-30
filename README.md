@@ -61,9 +61,12 @@ by default.
   (and the hard way a minute later if something holds the session up). It's for this once:
   after turning the computer off it's unset, as it is when you take it back or restart. Chats suspended with Ctrl+Z don't count; a chat
   that scheduled itself to wake up later (`/loop`) does count as finished.
-- **Switch accounts at 100%:** checked with every usage update (once a minute). It only moves
-  to an account that is signed in and under its limit; if they're all full, it stays. The
-  chat you're in continues on the new account with your next message.
+- **Switch accounts at 100%:** checked with every usage update (once a minute), and right away
+  when a chat stops with "You've hit your session limit" (claude-busy's StopFailure hook runs
+  `claude-account limit-hit`), so it still works while the usage check is refused for a while.
+  It only moves to an account that is signed in and under its limit (an account whose window
+  has ended counts as empty); if they're all full, it stays. The chat you're in continues on
+  the new account with your next message.
 
 - **Permission prompts as notifications** and **Blink the ThinkPad lights:** see
   [When Claude needs you](#when-claude-needs-you). The lights switch shows on ThinkPads only.
@@ -289,6 +292,7 @@ From the terminal, `claude-account add NAME --private` does the same with the na
 | `claude-account usage` | Fetch 5-hour usage for every account |
 | `claude-account history [NAME]` | Recent 5-hour windows, how high each went, and their tokens |
 | `claude-account auto-switch on\|off` | Switch accounts automatically at 100% (on by default) |
+| `claude-account limit-hit TRANSCRIPT` | A chat stopped at the usage limit: mark the account full and switch now (claude-busy calls it) |
 | `claude-account keep-awake on\|off` | Keep the computer awake while Claude works (on by default) |
 | `claude-account ask on\|off` | Permission prompts as notifications too (on by default) |
 | `claude-account lights on\|off` | Blink the ThinkPad lights (on by default, after `install-lights.sh`) |
