@@ -39,6 +39,7 @@ OFF_WARN_SECONDS=${CLAUDE_BUSY_OFF_WARN:-60}
 SESSIONS=${CLAUDE_SESSIONS:-$HOME/.claude/sessions}   # Claude Code's own list of its chats
 WAIT_SECONDS=${CLAUDE_BUSY_WAIT:-60}        # after the last session is done, before sleep is allowed
 NEEDS_SECONDS=${CLAUDE_BUSY_NEEDS:-900}     # awake for a session that waits for you
+STALE_SECONDS=${CLAUDE_BUSY_STALE:-10}      # "needs you" this old while Claude Code says it's busy: over
 CHECK_SECONDS=${CLAUDE_BUSY_CHECK:-5}
 ASK_CHECK_SECONDS=${CLAUDE_BUSY_ASK_CHECK:-60}   # a waiting permission prompt checks claude is there
 LEDS=${CLAUDE_BUSY_LEDS:-/sys/class/leds}
@@ -95,11 +96,22 @@ working() {
 # Sessions waiting for you, the same way; true if any. With "recent", only those waiting for
 # less than NEEDS_SECONDS (they keep the computer awake).
 needing() {
+    local st
     left=1
     for f in "$DIR"/needs/*; do
         [ -f "$f" ] || continue
         { read -r p; read -r since; } < "$f" 2>/dev/null
         if [ -n "$p" ] && [ ! -d "/proc/$p" ]; then rm -f "$f"; continue; fi
+        # Claude Code itself says the chat carries on (working, running a command): it doesn't
+        # wait for you any more, even if no hook said so yet (a question answered in the
+        # terminal while Claude thinks on). Open permission prompts still count.
+        if [ -n "$p" ] && [ $((EPOCHSECONDS - ${since:-0})) -ge "$STALE_SECONDS" ] &&
+            ! compgen -G "$DIR/ask/${f##*/}.*.json" > /dev/null; then
+            st=$(grep -o '"status":"[a-z]*"' "$SESSIONS/$p.json" 2>/dev/null)
+            st=${st#*:\"}
+            st=${st%\"}
+            if [ "$st" = busy ] || [ "$st" = shell ]; then rm -f "$f"; continue; fi
+        fi
         [ "$1" = recent ] && [ $((EPOCHSECONDS - ${since:-0})) -ge "$NEEDS_SECONDS" ] && continue
         left=0
     done
@@ -157,7 +169,11 @@ try:
     done = json.loads(sys.stdin.readline())
 except ValueError:
     sys.exit()
-same = lambda r: r.get("tool_name") == done.get("tool_name") and r.get("tool_input") == done.get("tool_input")
+def same(r):
+    a, b = r.get("tool_input") or {}, done.get("tool_input") or {}
+    # Everything the prompt asked, still there (the answers to a question get added afterwards).
+    return r.get("tool_name") == done.get("tool_name") and isinstance(a, dict) and isinstance(b, dict) \
+        and all(b.get(k) == v for k, v in a.items())
 for key in sys.argv[2:]:
     try:
         with open(os.path.join(sys.argv[1], key + ".json")) as f:
@@ -357,10 +373,24 @@ ask)
     trap 'rm -f "$A/$key.fifo" "$A/$key.pid" "$A/$key.json"; exit 0' TERM INT
     exec 3<> "$A/$key.fifo"
     answer=
-    # Blocks without using the CPU; once a minute it checks that claude is still there.
+    ended=
+    # A question or a plan shows Claude Code as "waiting" until it's answered; answered in the
+    # terminal, it carries on at once: then this card goes at once too (checked each second).
+    # Other prompts block without using the CPU; once a minute they check claude is still there.
+    tick=$ASK_CHECK_SECONDS
+    case $v in AskUserQuestion|ExitPlanMode) tick=1 ;; esac
+    seen_waiting=
     while :; do
-        if read -t "$ASK_CHECK_SECONDS" -r answer <&3; then break; fi
+        if read -t "$tick" -r answer <&3; then break; fi
         [ -n "$pid" ] && [ ! -d "/proc/$pid" ] && break
+        if [ "$tick" = 1 ] && [ -n "$pid" ]; then
+            st=$(grep -o '"status":"[a-z]*"' "$SESSIONS/$pid.json" 2>/dev/null)
+            st=${st#*:\"}
+            st=${st%\"}
+            if [ "$st" = waiting ]; then seen_waiting=1
+            elif [ -n "$seen_waiting" ] && [ -n "$st" ]; then ended=terminal; break
+            fi
+        fi
     done
     rm -f "$A/$key.fifo" "$A/$key.pid" "$A/$key.json"
     case $answer in
@@ -371,7 +401,15 @@ ask)
         echo "$pid" > "$DIR/$id"
         lights
         ;;
-    *) log "$key: ended without an answer (claude went away)" ;;
+    *)
+        if [ "$ended" = terminal ]; then
+            log "$key: answered in the terminal"
+            [ -n "$(asks_of)" ] || rm -f "$DIR/needs/$id"
+            lights
+        else
+            log "$key: ended without an answer (claude went away)"
+        fi
+        ;;
     esac
     ;;
 answer)

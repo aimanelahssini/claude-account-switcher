@@ -23,7 +23,7 @@ done
 echo "state:      open" > "$T/lid/LID0/state"
 ln -s "$(command -v bash)" "$T/bin/claude"   # a process named claude, like Claude Code
 export XDG_RUNTIME_DIR="$T/rt" HOME="$T/home" CLAUDE_BUSY_WAIT=2 CLAUDE_BUSY_CHECK=1 \
-    CLAUDE_BUSY_NEEDS=3 CLAUDE_BUSY_ASK_CHECK=1 CLAUDE_BUSY_LEDS="$T/leds" CLAUDE_BUSY_LID="$T/lid"
+    CLAUDE_BUSY_NEEDS=3 CLAUDE_BUSY_STALE=1 CLAUDE_BUSY_ASK_CHECK=1 CLAUDE_BUSY_LEDS="$T/leds" CLAUDE_BUSY_LID="$T/lid"
 D="$T/rt/claude-busy"
 WORKING="0 360 0 0 255 720 255 0 0 360 0 0"
 NEEDS="255 150 255 0 0 150 0 0 255 150 255 0 0 1800 0 0"
@@ -111,6 +111,24 @@ hook busy '"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"com
 sleep 0.3
 check "  its own tool running (answered in the terminal) ends it, says nothing" "! kill -0 ${ka_pid:-999999} 2>/dev/null && [ ! -s '$T/out-a' ] && [ ! -e '$D/ask/$ka.json' ] && [ ! -e '$D/needs/s1' ]"
 
+# A question answered in the terminal: Claude Code adds the answers to the tool's input, and its
+# status goes from waiting to busy. Either way the card goes, at once.
+hookto out-q ask '"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Colour?"}]}' '&'
+new_prompt; kq=$NEW
+hook busy '"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Colour?"}],"answers":{"Colour?":"Red"}}'
+sleep 0.3
+check "a question answered in the terminal (answers added to its input): the card goes" "[ -n '$kq' ] && [ ! -e '$D/ask/$kq.json' ] && [ ! -s '$T/out-q' ] && [ ! -e '$D/needs/s1' ]" "$kq"
+mkdir -p "$HOME/.claude/sessions"
+echo "{\"pid\":$FAKE,\"sessionId\":\"s1\",\"status\":\"waiting\"}" > "$HOME/.claude/sessions/$FAKE.json"
+hookto out-r ask '"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Size?"}]}' '&'
+new_prompt; kr=$NEW
+sleep 1.5
+check "  a question on screen stays while Claude Code waits" "[ -n '$kr' ] && [ -e '$D/ask/$kr.json' ]" "$kr"
+echo "{\"pid\":$FAKE,\"sessionId\":\"s1\",\"status\":\"busy\"}" > "$HOME/.claude/sessions/$FAKE.json"
+sleep 1.8
+check "  answered in the terminal (Claude Code busy again, no hook yet): the card goes" "[ ! -e '$D/ask/$kr.json' ] && [ ! -s '$T/out-r' ] && grep -q '$kr: answered in the terminal' '$D/.log'"
+rm -f "$HOME/.claude/sessions/$FAKE.json"
+
 # Typing something new ends every prompt the chat had open.
 ask out-c whoami
 new_prompt; kc=$NEW
@@ -137,6 +155,18 @@ check "  still shown as waiting for you" "[ -e '$D/needs/s1' ] && \"$BUSY\" stat
     sleep 0.5; kill -9 \$\$" ) 2>/dev/null
 sleep 2.5
 check "claude gone: its waiting prompt ends" "! ls '$D/ask' | grep -q '^s9\\.' && [ ! -e '$D/needs/s9' ]"
+
+# A question answered in the terminal, Claude thinks on (no hook yet): Claude Code's own status
+# ends the "needs you".
+hook needs '"hook_event_name":"Notification","notification_type":"elicitation_dialog"'
+mkdir -p "$HOME/.claude/sessions"
+echo "{\"pid\":$FAKE,\"sessionId\":\"s1\",\"status\":\"waiting\"}" > "$HOME/.claude/sessions/$FAKE.json"
+sleep 1.2; "$BUSY" status > /dev/null
+check "Claude Code says waiting: still needs you" "[ -e '$D/needs/s1' ]"
+echo "{\"pid\":$FAKE,\"sessionId\":\"s1\",\"status\":\"busy\"}" > "$HOME/.claude/sessions/$FAKE.json"
+"$BUSY" status > /dev/null
+check "Claude Code says busy again: no longer needs you" "[ ! -e '$D/needs/s1' ]"
+rm -f "$HOME/.claude/sessions/$FAKE.json"
 
 # Switches off.
 touch "$HOME/.claude/accounts/lights-off"
